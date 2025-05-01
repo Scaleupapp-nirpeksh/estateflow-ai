@@ -5,8 +5,8 @@ const router = express.Router();
 const authRoutes = require('./auth.routes');
 const tenantRoutes = require('./tenant.routes');
 const userRoutes = require('./user.routes');
+const inventoryRoutes = require('./inventory');
 // These will be implemented in future steps
-// const inventoryRoutes = require('./inventory.routes');
 // const leadRoutes = require('./lead.routes');
 // const bookingRoutes = require('./booking.routes');
 // const paymentRoutes = require('./payment.routes');
@@ -17,7 +17,7 @@ const userRoutes = require('./user.routes');
 router.use('/auth', authRoutes);
 router.use('/tenants', tenantRoutes);
 router.use('/users', userRoutes);
-// router.use('/inventory', inventoryRoutes);
+router.use('/inventory', inventoryRoutes);
 // router.use('/leads', leadRoutes);
 // router.use('/bookings', bookingRoutes);
 // router.use('/payments', paymentRoutes);
