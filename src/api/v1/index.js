@@ -2,10 +2,10 @@ const express = require('express');
 const router = express.Router();
 
 // Import route modules
+const authRoutes = require('./auth.routes');
+const tenantRoutes = require('./tenant.routes');
+const userRoutes = require('./user.routes');
 // These will be implemented in future steps
-// const authRoutes = require('./auth.routes');
-// const tenantRoutes = require('./tenant.routes');
-// const userRoutes = require('./user.routes');
 // const inventoryRoutes = require('./inventory.routes');
 // const leadRoutes = require('./lead.routes');
 // const bookingRoutes = require('./booking.routes');
@@ -14,9 +14,9 @@ const router = express.Router();
 // const conversationRoutes = require('./conversation.routes');
 
 // API Routes
-// router.use('/auth', authRoutes);
-// router.use('/tenants', tenantRoutes);
-// router.use('/users', userRoutes);
+router.use('/auth', authRoutes);
+router.use('/tenants', tenantRoutes);
+router.use('/users', userRoutes);
 // router.use('/inventory', inventoryRoutes);
 // router.use('/leads', leadRoutes);
 // router.use('/bookings', bookingRoutes);

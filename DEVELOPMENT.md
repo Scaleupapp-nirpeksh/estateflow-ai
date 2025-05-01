@@ -2,9 +2,9 @@
 
 This document serves as a comprehensive guide for the development of EstateFlow AI, including current state, next steps, architecture decisions, and implementation details.
 
-## Current State (Day 1 Morning)
+## Current State
 
-### Completed Tasks
+### Day 1 Morning (Completed)
 
 - Repository setup with Git
 - Project scaffolding with Node.js
@@ -15,6 +15,14 @@ This document serves as a comprehensive guide for the development of EstateFlow 
 - Database connection configuration for MongoDB
 - Initial API routing structure
 - Authentication and validation middleware skeletons
+
+### Day 1 Afternoon (Completed)
+
+- Database schemas for Tenant and User models
+- Authentication system with JWT
+- Tenant management service and API
+- User management service and API
+- Role-based access control implementation
 
 ### Project Structure
 
