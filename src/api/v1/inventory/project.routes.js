@@ -141,10 +141,11 @@ router.put(
     ],
     async (req, res, next) => {
         try {
-            const project = await projectService.getProjectById(req.params.id);
+            // First get the project to check if it belongs to the tenant
+            const existingProject = await projectService.getProjectById(req.params.id);
 
             // Check if project belongs to the user's tenant
-            if (project.tenantId.toString() !== req.user.tenantId.toString()) {
+            if (existingProject.tenantId.toString() !== req.user.tenantId.toString()) {
                 return res.status(403).json({
                     status: 'error',
                     message: 'Access forbidden',
@@ -179,10 +180,11 @@ router.put(
     ],
     async (req, res, next) => {
         try {
-            const project = await projectService.getProjectById(req.params.id);
+            // First get the project to check if it belongs to the tenant
+            const existingProject = await projectService.getProjectById(req.params.id);
 
             // Check if project belongs to the user's tenant
-            if (project.tenantId.toString() !== req.user.tenantId.toString()) {
+            if (existingProject.tenantId.toString() !== req.user.tenantId.toString()) {
                 return res.status(403).json({
                     status: 'error',
                     message: 'Access forbidden',
@@ -214,10 +216,11 @@ router.delete(
     authorize(['Principal']),
     async (req, res, next) => {
         try {
-            const project = await projectService.getProjectById(req.params.id);
+            // First get the project to check if it belongs to the tenant
+            const existingProject = await projectService.getProjectById(req.params.id);
 
             // Check if project belongs to the user's tenant
-            if (project.tenantId.toString() !== req.user.tenantId.toString()) {
+            if (existingProject.tenantId.toString() !== req.user.tenantId.toString()) {
                 return res.status(403).json({
                     status: 'error',
                     message: 'Access forbidden',

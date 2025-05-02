@@ -129,14 +129,14 @@ const getTowerById = async (id) => {
 
         // Get unit types and their counts
         const unitTypes = await Unit.aggregate([
-            { $match: { towerId: mongoose.Types.ObjectId(id) } },
+            { $match: { towerId: new mongoose.Types.ObjectId(id) } },
             { $group: { _id: '$type', count: { $sum: 1 } } },
             { $sort: { count: -1 } },
         ]);
 
         // Get units by floor
         const unitsByFloor = await Unit.aggregate([
-            { $match: { towerId: mongoose.Types.ObjectId(id) } },
+            { $match: { towerId: new mongoose.Types.ObjectId(id) } },
             { $sort: { number: 1 } },
             {
                 $group: {

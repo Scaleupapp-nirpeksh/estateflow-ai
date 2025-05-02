@@ -128,7 +128,7 @@ const getProjectById = async (id) => {
 
         // Get unit types and their counts
         const unitTypes = await Unit.aggregate([
-            { $match: { projectId: mongoose.Types.ObjectId(id) } },
+            { $match: { projectId: new mongoose.Types.ObjectId(id) } },
             { $group: { _id: '$type', count: { $sum: 1 } } },
             { $sort: { count: -1 } },
         ]);
