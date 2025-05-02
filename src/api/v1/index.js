@@ -1,3 +1,5 @@
+// src/api/v1/index.js
+
 const express = require('express');
 const router = express.Router();
 
@@ -7,8 +9,8 @@ const tenantRoutes = require('./tenant.routes');
 const userRoutes = require('./user.routes');
 const inventoryRoutes = require('./inventory');
 const pricingRuleRoutes = require('./pricing-rule.routes');
+const leadRoutes = require('./lead.routes'); // Add this line
 // These will be implemented in future steps
-// const leadRoutes = require('./lead.routes');
 // const bookingRoutes = require('./booking.routes');
 // const paymentRoutes = require('./payment.routes');
 // const documentRoutes = require('./document.routes');
@@ -20,7 +22,7 @@ router.use('/tenants', tenantRoutes);
 router.use('/users', userRoutes);
 router.use('/inventory', inventoryRoutes);
 router.use('/pricing-rules', pricingRuleRoutes);
-// router.use('/leads', leadRoutes);
+router.use('/leads', leadRoutes); // Add this line
 // router.use('/bookings', bookingRoutes);
 // router.use('/payments', paymentRoutes);
 // router.use('/documents', documentRoutes);
