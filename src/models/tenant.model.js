@@ -55,6 +55,11 @@ const TenantSchema = new Schema(
                     default: 60,
                 },
             },
+            // Tenant-wide pricing rules
+            pricingRules: {
+                type: mongoose.Schema.Types.Mixed,
+                default: {}
+            },
             costSheetTemplate: {
                 type: Schema.Types.ObjectId,
                 ref: 'Template',

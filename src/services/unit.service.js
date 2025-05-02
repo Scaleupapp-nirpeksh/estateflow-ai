@@ -299,17 +299,80 @@ const updateUnit = async (id, updateData) => {
 /**
  * Calculate unit price with all premiums and taxes
  * @param {string} id - Unit ID
+ * @param {Object} options - Custom calculation options
  * @returns {Promise<Object>} - Price details
  */
-const calculateUnitPrice = async (id) => {
+const calculateUnitPrice = async (id, options = {}) => {
     try {
-        const unit = await Unit.findById(id);
+        const unit = await Unit.findById(id)
+            .populate('projectId', 'name city address gstRate stampDutyRate registrationRate')
+            .populate('towerId', 'name construction premiums');
 
         if (!unit) {
             throw new ApiError(404, 'Unit not found');
         }
 
-        const priceDetails = await unit.calculatePrice();
+        // Get tenant-specific pricing rules if they exist
+        if (!options.ignoreTenantRules) {
+            const tenant = await Tenant.findById(unit.tenantId);
+
+            if (tenant && tenant.settings && tenant.settings.pricingRules) {
+                // Merge tenant pricing rules with provided options, with options taking precedence
+                options = {
+                    ...tenant.settings.pricingRules,
+                    ...options
+                };
+            }
+        }
+
+        // Check if there's a custom pricing model for this project
+        if (!options.ignoreProjectCustomizations && unit.projectId) {
+            const project = await Project.findById(unit.projectId);
+            if (project && project.customPricingModel) {
+                // Merge project pricing rules with options, with options taking precedence
+                options = {
+                    ...project.customPricingModel,
+                    ...options
+                };
+            }
+        }
+
+        // Check if this unit type has specific pricing rules
+        if (!options.ignoreUnitTypeRules && unit.type) {
+            const unitTypeRules = await UnitTypeRule.findOne({
+                tenantId: unit.tenantId,
+                projectId: unit.projectId,
+                unitType: unit.type
+            });
+
+            if (unitTypeRules && unitTypeRules.pricingRules) {
+                // Merge unit type pricing rules with options, with options taking precedence
+                options = {
+                    ...unitTypeRules.pricingRules,
+                    ...options
+                };
+            }
+        }
+
+        // Generate price breakdown using the enhanced utility with options
+        const priceDetails = pricingUtils.generatePriceBreakdown(
+            unit,
+            unit.towerId,
+            unit.projectId,
+            options
+        );
+
+        // Log price calculation for audit purposes if requested
+        if (options.logCalculation) {
+            logger.info('Price calculation performed', {
+                unitId: unit._id,
+                unitNumber: unit.number,
+                totalPrice: priceDetails.totalPrice,
+                calculatedBy: options.calculatedBy || 'system',
+                calculationOptions: options
+            });
+        }
+
         return priceDetails;
     } catch (error) {
         logger.error('Error calculating unit price', { error, unitId: id });

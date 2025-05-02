@@ -6,6 +6,7 @@ const authRoutes = require('./auth.routes');
 const tenantRoutes = require('./tenant.routes');
 const userRoutes = require('./user.routes');
 const inventoryRoutes = require('./inventory');
+const pricingRuleRoutes = require('./pricing-rule.routes');
 // These will be implemented in future steps
 // const leadRoutes = require('./lead.routes');
 // const bookingRoutes = require('./booking.routes');
@@ -18,6 +19,7 @@ router.use('/auth', authRoutes);
 router.use('/tenants', tenantRoutes);
 router.use('/users', userRoutes);
 router.use('/inventory', inventoryRoutes);
+router.use('/pricing-rules', pricingRuleRoutes);
 // router.use('/leads', leadRoutes);
 // router.use('/bookings', bookingRoutes);
 // router.use('/payments', paymentRoutes);
