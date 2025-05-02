@@ -71,6 +71,11 @@ const ProjectSchema = new Schema(
                 type: String,
             },
         ],
+        // Custom pricing model for this project
+        customPricingModel: {
+            type: mongoose.Schema.Types.Mixed,
+            default: null
+        },
         location: {
             type: {
                 type: String,
@@ -82,16 +87,10 @@ const ProjectSchema = new Schema(
                 default: [0, 0],
             },
         },
-        // Custom pricing model for this project
-        customPricingModel: {
-            type: mongoose.Schema.Types.Mixed,
-            default: null
-        },
     },
     {
         timestamps: true,
-    },
-
+    }
 );
 
 // Add compound index for tenant and city

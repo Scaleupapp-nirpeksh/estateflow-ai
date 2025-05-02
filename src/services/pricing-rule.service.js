@@ -167,10 +167,51 @@ const deleteUnitTypeRule = async (ruleId) => {
     }
 };
 
+/**
+ * Get unit type pricing rule by ID
+ * @param {string} ruleId - Rule ID
+ * @returns {Promise<Object>} - Unit type rule
+ */
+const getUnitTypeRuleById = async (ruleId) => {
+    try {
+        const rule = await UnitTypeRule.findById(ruleId);
+
+        if (!rule) {
+            throw new ApiError(404, 'Rule not found');
+        }
+
+        return rule;
+    } catch (error) {
+        logger.error('Error getting unit type rule', { error, ruleId });
+        throw error;
+    }
+};
+
+/**
+ * Get all unit type rules for a project
+ * @param {string} projectId - Project ID
+ * @returns {Promise<Array>} - Unit type rules
+ */
+const getUnitTypeRulesByProject = async (projectId) => {
+    try {
+        const rules = await UnitTypeRule.find({
+            projectId,
+            active: true
+        });
+
+        return rules;
+    } catch (error) {
+        logger.error('Error getting unit type rules by project', { error, projectId });
+        throw error;
+    }
+};
+
 module.exports = {
     setTenantPricingRules,
     setProjectPricingModel,
     setUnitTypePricingRules,
     getPricingRules,
-    deleteUnitTypeRule
+    deleteUnitTypeRule,
+    getUnitTypeRuleById,
+    getUnitTypeRulesByProject
 };

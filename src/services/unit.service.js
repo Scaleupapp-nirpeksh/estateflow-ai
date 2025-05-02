@@ -3,6 +3,8 @@ const Unit = require('../models/unit.model');
 const Tower = require('../models/tower.model');
 const Project = require('../models/project.model');
 const Tenant = require('../models/tenant.model');
+const UnitTypeRule = require('../models/unit-type-rule.model');
+const pricingUtils = require('../utils/pricing-utils');
 const { ApiError } = require('../utils/error-handler');
 const logger = require('../utils/logger');
 
@@ -305,7 +307,7 @@ const updateUnit = async (id, updateData) => {
 const calculateUnitPrice = async (id, options = {}) => {
     try {
         const unit = await Unit.findById(id)
-            .populate('projectId', 'name city address gstRate stampDutyRate registrationRate')
+            .populate('projectId', 'name city address gstRate stampDutyRate registrationRate customPricingModel')
             .populate('towerId', 'name construction premiums');
 
         if (!unit) {
@@ -326,23 +328,21 @@ const calculateUnitPrice = async (id, options = {}) => {
         }
 
         // Check if there's a custom pricing model for this project
-        if (!options.ignoreProjectCustomizations && unit.projectId) {
-            const project = await Project.findById(unit.projectId);
-            if (project && project.customPricingModel) {
-                // Merge project pricing rules with options, with options taking precedence
-                options = {
-                    ...project.customPricingModel,
-                    ...options
-                };
-            }
+        if (!options.ignoreProjectCustomizations && unit.projectId && unit.projectId.customPricingModel) {
+            // Merge project pricing rules with options, with options taking precedence
+            options = {
+                ...unit.projectId.customPricingModel,
+                ...options
+            };
         }
 
         // Check if this unit type has specific pricing rules
         if (!options.ignoreUnitTypeRules && unit.type) {
             const unitTypeRules = await UnitTypeRule.findOne({
                 tenantId: unit.tenantId,
-                projectId: unit.projectId,
-                unitType: unit.type
+                projectId: unit.projectId._id,
+                unitType: unit.type,
+                active: true
             });
 
             if (unitTypeRules && unitTypeRules.pricingRules) {

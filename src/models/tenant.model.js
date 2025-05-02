@@ -3,7 +3,7 @@ const Schema = mongoose.Schema;
 
 /**
  * Tenant Schema
- * Represents an organization with its own isolated data
+ * Represents a tenant organization
  */
 const TenantSchema = new Schema(
     {
@@ -15,20 +15,9 @@ const TenantSchema = new Schema(
         domain: {
             type: String,
             required: [true, 'Domain is required'],
-            unique: true,
             trim: true,
-        },
-        logo: {
-            type: String,
-            default: null,
-        },
-        address: {
-            type: String,
-            default: null,
-        },
-        gstIn: {
-            type: String,
-            default: null,
+            unique: true,
+            lowercase: true,
         },
         contactEmail: {
             type: String,
@@ -38,49 +27,23 @@ const TenantSchema = new Schema(
         },
         contactPhone: {
             type: String,
+            trim: true,
+        },
+        address: {
+            type: String,
+            trim: true,
+        },
+        logo: {
+            type: String,
             default: null,
         },
-        settings: {
-            businessRules: {
-                maxDiscountPercentage: {
-                    type: Number,
-                    default: 5,
-                },
-                floorRisePremium: {
-                    type: Number,
-                    default: 0,
-                },
-                lockPeriodMinutes: {
-                    type: Number,
-                    default: 60,
-                },
-            },
-            // Tenant-wide pricing rules
-            pricingRules: {
-                type: mongoose.Schema.Types.Mixed,
-                default: {}
-            },
-            costSheetTemplate: {
-                type: Schema.Types.ObjectId,
-                ref: 'Template',
-                default: null,
-            },
-            emailTemplates: {
-                reminder: {
-                    type: Schema.Types.ObjectId,
-                    ref: 'Template',
-                    default: null,
-                },
-                costSheet: {
-                    type: Schema.Types.ObjectId,
-                    ref: 'Template',
-                    default: null,
-                },
-            },
-            languagePreference: {
-                type: String,
-                default: 'en',
-            },
+        gstIn: {
+            type: String,
+            trim: true,
+        },
+        active: {
+            type: Boolean,
+            default: true,
         },
         subscription: {
             plan: {
@@ -90,7 +53,7 @@ const TenantSchema = new Schema(
             },
             expiresAt: {
                 type: Date,
-                default: () => new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // Default 1 year from now
+                default: () => new Date(new Date().setFullYear(new Date().getFullYear() + 1)),
             },
             limits: {
                 storageGB: {
@@ -103,20 +66,33 @@ const TenantSchema = new Schema(
                 },
             },
         },
-        active: {
-            type: Boolean,
-            default: true,
-        },
+        // Tenant-wide business rules
+        settings: {
+            businessRules: {
+                maxDiscountPercentage: {
+                    type: Number,
+                    default: 10
+                },
+                floorRisePremium: {
+                    type: Number,
+                    default: 100
+                },
+                lockPeriodMinutes: {
+                    type: Number,
+                    default: 60
+                }
+            },
+            // Tenant-wide pricing rules
+            pricingRules: {
+                type: mongoose.Schema.Types.Mixed,
+                default: {}
+            }
+        }
     },
     {
         timestamps: true,
     }
 );
-
-// Add indexes for better query performance
-TenantSchema.index({ domain: 1 });
-TenantSchema.index({ 'subscription.plan': 1 });
-TenantSchema.index({ active: 1 });
 
 /**
  * @typedef Tenant

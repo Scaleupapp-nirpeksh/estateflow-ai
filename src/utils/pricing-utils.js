@@ -48,7 +48,19 @@ const calculateFloorRisePremium = (unit, tower, options = {}) => {
     // Allow custom premium rate progression (linear, exponential, etc.)
     let premiumRate;
     if (options.floorRiseProgression) {
-        premiumRate = options.floorRiseProgression(floorRise.value, floorDifference);
+        if (typeof options.floorRiseProgression === 'function') {
+            // If it's a function, call it directly
+            premiumRate = options.floorRiseProgression(floorRise.value, floorDifference);
+        } else if (options.floorRiseProgression.type === 'exponential' && options.floorRiseProgression.factor) {
+            // Handle exponential progression
+            premiumRate = floorRise.value * Math.pow(options.floorRiseProgression.factor, floorDifference - 1);
+        } else if (options.floorRiseProgression.type === 'custom' && typeof options.floorRiseProgression.calculator === 'function') {
+            // Handle custom calculator function
+            premiumRate = options.floorRiseProgression.calculator(floorRise.value, floorDifference);
+        } else {
+            // Default to linear if type not recognized
+            premiumRate = floorRise.value * floorDifference;
+        }
     } else {
         premiumRate = floorRise.value * floorDifference; // Default linear progression
     }
@@ -98,8 +110,12 @@ const calculateViewPremiums = (unit, tower, options = {}) => {
     }
 
     // Custom calculation method if provided
-    if (options.viewPremiumMethod && typeof options.viewPremiumMethod === 'function') {
-        return options.viewPremiumMethod(unit, tower, basePrice);
+    if (options.viewPremiumMethod) {
+        if (typeof options.viewPremiumMethod === 'function') {
+            return options.viewPremiumMethod(unit, tower, basePrice);
+        } else if (options.viewPremiumMethod.type && typeof options.viewPremiumMethod.calculator === 'function') {
+            return options.viewPremiumMethod.calculator(unit, tower, basePrice);
+        }
     }
 
     // Calculate premium for each view
@@ -202,8 +218,12 @@ const calculateAdditionalPremiums = (unit, basePrice, options = {}) => {
  */
 const calculateTaxes = (price, project, options = {}) => {
     // Custom calculation method if provided
-    if (options.taxCalculationMethod && typeof options.taxCalculationMethod === 'function') {
-        return options.taxCalculationMethod(price, project);
+    if (options.taxCalculationMethod) {
+        if (typeof options.taxCalculationMethod === 'function') {
+            return options.taxCalculationMethod(price, project);
+        } else if (options.taxCalculationMethod.type && typeof options.taxCalculationMethod.calculator === 'function') {
+            return options.taxCalculationMethod.calculator(price, project);
+        }
     }
 
     // Get tax rates, with defaults if not present
@@ -212,9 +232,44 @@ const calculateTaxes = (price, project, options = {}) => {
     const registrationRate = project.registrationRate || 1;
 
     // Allow for custom tax calculations from options
-    const calculateGST = options.calculateGST || ((price, rate) => (price * rate) / 100);
-    const calculateStampDuty = options.calculateStampDuty || ((price, rate) => (price * rate) / 100);
-    const calculateRegistration = options.calculateRegistration || ((price, rate) => (price * rate) / 100);
+    let calculateGST = (price, rate) => (price * rate) / 100;
+    let calculateStampDuty = (price, rate) => (price * rate) / 100;
+    let calculateRegistration = (price, rate) => (price * rate) / 100;
+
+    // Handle custom tax calculation functions
+    if (options.calculateGST) {
+        if (typeof options.calculateGST === 'function') {
+            calculateGST = options.calculateGST;
+        } else if (options.calculateGST.type === 'tiered') {
+            // Handle tiered GST calculation
+            calculateGST = (price, rate) => {
+                const tiers = options.calculateGST.tiers || [];
+                if (tiers.length === 0) return (price * rate) / 100;
+
+                // Sort tiers by threshold
+                tiers.sort((a, b) => {
+                    if (a.threshold === null) return 1;
+                    if (b.threshold === null) return -1;
+                    return a.threshold - b.threshold;
+                });
+
+                // Find applicable tier
+                const tier = tiers.find(t => t.threshold === null || price <= t.threshold);
+                return tier ? (price * tier.rate) / 100 : (price * rate) / 100;
+            };
+        } else if (options.calculateGST.type === 'fixed') {
+            // Handle fixed rate GST
+            calculateGST = (price, rate) => (price * options.calculateGST.rate) / 100;
+        }
+    }
+
+    if (typeof options.calculateStampDuty === 'function') {
+        calculateStampDuty = options.calculateStampDuty;
+    }
+
+    if (typeof options.calculateRegistration === 'function') {
+        calculateRegistration = options.calculateRegistration;
+    }
 
     const gst = calculateGST(price, gstRate);
     const stampDuty = calculateStampDuty(price, stampDutyRate);
