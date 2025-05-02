@@ -9,12 +9,11 @@ const tenantRoutes = require('./tenant.routes');
 const userRoutes = require('./user.routes');
 const inventoryRoutes = require('./inventory');
 const pricingRuleRoutes = require('./pricing-rule.routes');
-const leadRoutes = require('./lead.routes'); // Add this line
-// These will be implemented in future steps
-// const bookingRoutes = require('./booking.routes');
-// const paymentRoutes = require('./payment.routes');
-// const documentRoutes = require('./document.routes');
-// const conversationRoutes = require('./conversation.routes');
+const leadRoutes = require('./lead.routes');
+const bookingRoutes = require('./booking.routes');
+const approvalRoutes = require('./approval.routes');
+const paymentScheduleRoutes = require('./payment-schedule.routes');
+const paymentScheduleTemplateRoutes = require('./payment-schedule-template.routes');
 
 // API Routes
 router.use('/auth', authRoutes);
@@ -22,11 +21,11 @@ router.use('/tenants', tenantRoutes);
 router.use('/users', userRoutes);
 router.use('/inventory', inventoryRoutes);
 router.use('/pricing-rules', pricingRuleRoutes);
-router.use('/leads', leadRoutes); // Add this line
-// router.use('/bookings', bookingRoutes);
-// router.use('/payments', paymentRoutes);
-// router.use('/documents', documentRoutes);
-// router.use('/conversation', conversationRoutes);
+router.use('/leads', leadRoutes);
+router.use('/bookings', bookingRoutes);
+router.use('/approvals', approvalRoutes);
+router.use('/payment-schedules', paymentScheduleRoutes);
+router.use('/payment-schedule-templates', paymentScheduleTemplateRoutes);
 
 // Basic test route
 router.get('/status', (req, res) => {
