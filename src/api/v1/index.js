@@ -14,6 +14,8 @@ const bookingRoutes = require('./booking.routes');
 const approvalRoutes = require('./approval.routes');
 const paymentScheduleRoutes = require('./payment-schedule.routes');
 const paymentScheduleTemplateRoutes = require('./payment-schedule-template.routes');
+const analyticsRoutes = require('./analytics.routes');
+const reportsRoutes = require('./reports.routes');
 
 // API Routes
 router.use('/auth', authRoutes);
@@ -26,6 +28,8 @@ router.use('/bookings', bookingRoutes);
 router.use('/approvals', approvalRoutes);
 router.use('/payment-schedules', paymentScheduleRoutes);
 router.use('/payment-schedule-templates', paymentScheduleTemplateRoutes);
+router.use('/analytics', analyticsRoutes);
+router.use('/reports', reportsRoutes);
 
 // Basic test route
 router.get('/status', (req, res) => {
