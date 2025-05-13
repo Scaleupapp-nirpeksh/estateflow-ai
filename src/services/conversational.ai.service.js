@@ -23,7 +23,8 @@ class ConversationalAIService {
             [Intents.GET_TOWER_DETAILS]: inventoryHandler.handleGetTowerDetails.bind(inventoryHandler),
             [Intents.GET_PROJECT_UNIT_STATS]: inventoryHandler.handleGetProjectUnitStats.bind(inventoryHandler),
             [Intents.GET_TOWER_CONSTRUCTION_STATUS]: inventoryHandler.handleGetTowerConstructionStatus.bind(inventoryHandler),
-
+            [Intents.LOCK_UNIT]: inventoryHandler.handleLockUnit.bind(inventoryHandler),
+            [Intents.RELEASE_UNIT]: inventoryHandler.handleReleaseUnit.bind(inventoryHandler),
 
             // Lead Intents
             [Intents.GET_LEAD_DETAILS]: leadHandler.handleGetLeadDetails.bind(leadHandler),
@@ -32,26 +33,21 @@ class ConversationalAIService {
             [Intents.CREATE_LEAD_NOTE]: leadHandler.handleCreateLeadNote.bind(leadHandler),
             [Intents.LOG_LEAD_INTERACTION]: leadHandler.handleLogLeadInteraction.bind(leadHandler),
             [Intents.UPDATE_LEAD_STATUS]: leadHandler.handleUpdateLeadStatus.bind(leadHandler),
-            [Intents.UPDATE_LEAD_FIELD]: leadHandler.handleUpdateLeadField.bind(leadHandler), // New
-            [Intents.ADD_INTERESTED_UNIT_TO_LEAD]: leadHandler.handleAddInterestedUnitToLead.bind(leadHandler), // New
-
-            // Simple Task Execution (from previous sprints, ensure they are still mapped if separate)
-            [Intents.LOCK_UNIT]: inventoryHandler.handleLockUnit ? inventoryHandler.handleLockUnit.bind(inventoryHandler) : this._notImplementedHandler.bind(this, Intents.LOCK_UNIT), // Assuming LOCK_UNIT is in inventoryHandler
-            [Intents.RELEASE_UNIT]: inventoryHandler.handleReleaseUnit ? inventoryHandler.handleReleaseUnit.bind(inventoryHandler) : this._notImplementedHandler.bind(this, Intents.RELEASE_UNIT),
-            [Intents.ASSIGN_LEAD_TO_AGENT]: leadHandler.handleAssignLeadToAgent ? leadHandler.handleAssignLeadToAgent.bind(leadHandler) : this._notImplementedHandler.bind(this, Intents.ASSIGN_LEAD_TO_AGENT),
+            [Intents.UPDATE_LEAD_FIELD]: leadHandler.handleUpdateLeadField.bind(leadHandler),
+            [Intents.ADD_INTERESTED_UNIT_TO_LEAD]: leadHandler.handleAddInterestedUnitToLead.bind(leadHandler),
+            [Intents.ASSIGN_LEAD_TO_AGENT]: leadHandler.handleAssignLeadToAgent.bind(leadHandler),
         };
     }
 
     async _notImplementedHandler(intentName, entities, userId, tenantId, role, conversationContext) {
-        logger.warn(`[ConversationalAIService] Intent ${intentName} is defined but its handler is not yet implemented.`);
+        logger.warn(`[ConversationalAIService] Intent ${intentName} is defined but its handler is not yet implemented or mapped correctly.`);
         return {
             success: false,
-            message: `I understand you want to ${intentName.toLowerCase().replace(/_/g, ' ')}, but I'm not equipped to do that yet.`,
+            message: `I understand you want to perform an action related to '${intentName.toLowerCase().replace(/_/g, ' ')}', but I'm not fully equipped to do that yet.`,
             data: null,
             conversationContextUpdate: {}
         };
     }
-
 
     async processMessage(userId, tenantId, role, userMessage, conversationContext = {}) {
         logger.info(`[ConversationalAIService] Processing message for user ${userId} in tenant ${tenantId}: "${userMessage}"`);
@@ -62,7 +58,7 @@ class ConversationalAIService {
                 success: false,
                 message: "Please provide a message.",
                 data: null,
-                conversationContextUpdate: conversationContext, // Return original context
+                conversationContextUpdate: conversationContext,
             };
         }
 
@@ -97,7 +93,6 @@ class ConversationalAIService {
             }
         } else {
             logger.warn(`[ConversationalAIService] No action handler found for intent: ${nluOutput.intent}`);
-            // Use the _notImplementedHandler for defined but unmapped intents
             actionResult = await this._notImplementedHandler(nluOutput.intent, nluOutput.entities, userId, tenantId, role, updatedContext);
         }
 
@@ -113,8 +108,8 @@ class ConversationalAIService {
     _manageContext(currentContext, updates) {
         const newContext = { ...currentContext };
         for (const key in updates) {
-            if (updates[key] !== undefined) { // Only update/add if value is provided
-                if (updates[key] === null && newContext[key] !== undefined) { // Allow explicit clearing of a context field
+            if (updates[key] !== undefined) {
+                if (updates[key] === null && newContext[key] !== undefined) {
                     delete newContext[key];
                 } else if (updates[key] !== null) {
                     newContext[key] = updates[key];
@@ -122,12 +117,20 @@ class ConversationalAIService {
             }
         }
         if (newContext.endConversation) {
-            return { conversationEnded: true }; // Signal to client to potentially reset context
+            return { conversationEnded: true };
         }
-        // Clean up transient NLU output from context to prevent it from growing indefinitely
-        // delete newContext.lastNLUOutput; 
-        // delete newContext.lastUserMessage;
-        return newContext;
+        // Only keep relevant context for a few turns or based on active entities
+        const CONTEXT_KEYS_TO_KEEP = ['activeProjectId', 'activeProjectName', 'activeTowerId', 'activeTowerName', 'activeUnitId', 'activeUnitNumber', 'activeLeadId', 'activeLeadName', 'lastNLUOutput', 'lastUserMessage'];
+        const prunedContext = {};
+        CONTEXT_KEYS_TO_KEEP.forEach(key => {
+            if (newContext[key] !== undefined) {
+                prunedContext[key] = newContext[key];
+            }
+        });
+        // If conversation ended, just return that signal
+        if (newContext.conversationEnded) return { conversationEnded: true };
+
+        return prunedContext;
     }
 }
 

@@ -1,7 +1,7 @@
 // src/ai/actionHandlers/lead.handler.js
 
 const leadService = require('../../services/lead.service.js');
-const unitService = require('../../services/unit.service.js'); // For finding units
+const unitService = require('../../services/unit.service.js');
 const userService = require('../../services/user.service.js');
 const logger = require('../../utils/logger.js');
 const Entities = require('../definitions/entities.js');
@@ -19,11 +19,12 @@ class LeadHandler {
 
         // Priority 1: Explicit ID from current utterance
         if (leadIdFromEntity && mongoose.Types.ObjectId.isValid(leadIdFromEntity)) {
+            logger.debug(`[LeadHandler._findLead] Attempting to find by explicit ID: ${leadIdFromEntity}`);
             const lead = await leadService.getLeadById(leadIdFromEntity);
             if (lead && lead.tenantId.toString() === tenantId) return lead;
         }
 
-        // Priority 2: Active lead from context if no specific lead mentioned in current utterance
+        // Priority 2: Active lead from context if no specific lead identifier (name, phone, email, ID) is in the current utterance
         if (conversationContext && conversationContext.activeLeadId &&
             mongoose.Types.ObjectId.isValid(conversationContext.activeLeadId) &&
             !leadIdFromEntity && !leadNameFromEntity && !leadPhoneFromEntity && !leadEmailFromEntity) {
@@ -32,54 +33,58 @@ class LeadHandler {
             if (lead && lead.tenantId.toString() === tenantId) return lead;
         }
 
-        // Priority 3: Search by other identifiers
+        // Priority 3: Search by other identifiers if an identifier was provided in the utterance
         const searchFilters = { tenantId };
         let searchCriteriaUsed = null;
 
         if (leadNameFromEntity) {
-            searchFilters.$text = { $search: leadNameFromEntity };
-            searchCriteriaUsed = `name "${leadNameFromEntity}"`;
+            // Using a case-insensitive regex for partial name matching, can be refined
+            searchFilters.fullName = { $regex: new RegExp(leadNameFromEntity, 'i') };
+            searchCriteriaUsed = `name matching "${leadNameFromEntity}"`;
         } else if (leadPhoneFromEntity) {
-            searchFilters.phone = leadPhoneFromEntity;
+            searchFilters.phone = leadPhoneFromEntity; // Assumes exact phone match
             searchCriteriaUsed = `phone "${leadPhoneFromEntity}"`;
         } else if (leadEmailFromEntity) {
-            searchFilters.email = leadEmailFromEntity.toLowerCase();
+            searchFilters.email = leadEmailFromEntity.toLowerCase(); // Assumes exact email match
             searchCriteriaUsed = `email "${leadEmailFromEntity}"`;
         }
 
         if (searchCriteriaUsed) {
-            // Fetch more than 1 to check for duplicates if we need to ask for clarification
-            const leadsResult = await leadService.getLeads(tenantId, searchFilters, { page: 1, limit: askForClarification ? 5 : 1 });
+            logger.debug(`[LeadHandler._findLead] Searching with criteria: ${searchCriteriaUsed}`, searchFilters);
+            const leadsResult = await leadService.getLeads(tenantId, searchFilters, { page: 1, limit: askForClarification ? 5 : 2 }); // Fetch 2 to check for exact single match vs multiple
             if (leadsResult && leadsResult.data.length > 0) {
                 if (leadsResult.data.length === 1) {
-                    return await leadService.getLeadById(leadsResult.data[0]._id); // Fetch full details
+                    logger.debug(`[LeadHandler._findLead] Found 1 lead by criteria: ${leadsResult.data[0]._id}`);
+                    return await leadService.getLeadById(leadsResult.data[0]._id);
                 } else if (askForClarification) {
-                    // Multiple leads found, return them for clarification
+                    logger.debug(`[LeadHandler._findLead] Found ${leadsResult.data.length} leads by criteria, returning for clarification.`);
                     return leadsResult.data;
                 }
-                // If not asking for clarification, and multiple found, it's ambiguous.
-                // For now, we'll let it fall through to null, but this is where disambiguation UI/logic would go.
-                logger.warn(`[LeadHandler._findLead] Ambiguous search for ${searchCriteriaUsed}, found ${leadsResult.data.length} leads.`);
-                return null; // Or throw an error / return a special object indicating ambiguity
+                logger.warn(`[LeadHandler._findLead] Ambiguous search for ${searchCriteriaUsed}, found ${leadsResult.data.length} leads but not asking for clarification in this call.`);
+                return null;
             }
         }
-        return null; // No lead found
+        logger.debug(`[LeadHandler._findLead] No lead found with provided entities or context.`);
+        return null;
     }
+
+    // ... (handleGetLeadDetails, handleListLeads, handleCreateLeadNote, handleLogLeadInteraction, handleUpdateLeadStatus, handleUpdateLeadField, handleAddInterestedUnitToLead remain largely the same as Sprint 2.5 but will benefit from the refined _findLead)
+    // Minor adjustments might be needed in their specific calls to _findLead or how they handle its response.
+    // For brevity, I'll show the updated handleAssignLeadToAgent and then the other methods can be assumed to use the refined _findLead.
 
     async handleGetLeadDetails(entities, userId, tenantId, role, conversationContext) {
         try {
-            const lead = await this._findLead(entities, tenantId, conversationContext);
+            const lead = await this._findLead(entities, tenantId, conversationContext, true); // Ask for clarification if ambiguous
 
             if (!lead) {
                 let leadIdentifier = entities[Entities.LEAD_NAME] || entities[Entities.LEAD_PHONE] || entities[Entities.LEAD_ID] || "the specified lead";
-                if (conversationContext?.activeLeadName && !leadIdentifier) leadIdentifier = `lead ${conversationContext.activeLeadName}`;
+                if (conversationContext?.activeLeadName && !Object.values(entities).some(e => e)) leadIdentifier = `lead ${conversationContext.activeLeadName}`;
                 return { success: false, message: `I couldn't find ${leadIdentifier}. Please check the name, phone, or ID, or be more specific.`, data: null, conversationContextUpdate: {} };
             }
-            if (Array.isArray(lead)) { // Multiple leads found by name/phone/email
+            if (Array.isArray(lead)) {
                 const leadOptions = lead.map(l => `${l.fullName} (Phone: ${l.phone}, ID: ${l._id})`).join('\n - ');
                 return { success: false, message: `I found multiple leads matching your description:\n - ${leadOptions}\nPlease specify by ID or a more unique identifier.`, data: lead, conversationContextUpdate: {} };
             }
-
 
             if (['JuniorAgent', 'SeniorAgent'].includes(role) && (!lead.assignedTo || lead.assignedTo._id.toString() !== userId)) {
                 return { success: false, message: "You do not have permission to view this lead's details.", data: null, conversationContextUpdate: {} };
@@ -91,12 +96,13 @@ class LeadHandler {
             if (lead.email) message += `- Email: ${lead.email}\n`;
             if (lead.alternatePhone) message += `- Alt. Phone: ${lead.alternatePhone}\n`;
             if (lead.assignedTo) message += `- Assigned To: ${lead.assignedTo.name || 'N/A'}\n`;
+            else message += `- Assigned To: Unassigned\n`;
             if (lead.source) message += `- Source: ${lead.source}\n`;
             if (lead.priority) message += `- Priority: ${lead.priority}\n`;
             if (lead.projectId) message += `- Interested Project: ${lead.projectId.name || lead.projectId}\n`;
             if (lead.preferredUnitTypes && lead.preferredUnitTypes.length > 0) message += `- Preferred Units: ${lead.preferredUnitTypes.join(', ')}\n`;
             if (lead.budget && (lead.budget.min || lead.budget.max)) {
-                message += `- Budget: ${lead.budget.min || 'N/A'} - ${lead.budget.max || 'N/A'} ${lead.budget.currency || ''}\n`;
+                message += `- Budget: ${this._formatCurrency(lead.budget.min)} - ${this._formatCurrency(lead.budget.max)} ${lead.budget.currency || ''}\n`;
             }
             if (lead.requirements) message += `- Requirements: ${lead.requirements}\n`;
             if (lead.tags && lead.tags.length > 0) message += `- Tags: ${lead.tags.join(', ')}\n`;
@@ -145,8 +151,6 @@ class LeadHandler {
             if (entities[Entities.LEAD_SOURCE]) filters.source = entities[Entities.LEAD_SOURCE].toLowerCase();
             if (entities[Entities.LEAD_PRIORITY]) filters.priority = entities[Entities.LEAD_PRIORITY].toLowerCase();
             if (entities[Entities.PROJECT_NAME]) {
-                // Simplified: assumes projectService can find project by name to get ID
-                // In a real scenario, you might need a robust project lookup
                 const project = await this._findProjectByName(entities[Entities.PROJECT_NAME], tenantId);
                 if (project) filters.projectId = project._id;
                 else return { success: false, message: `Could not find project "${entities[Entities.PROJECT_NAME]}".`, data: null, conversationContextUpdate: {} };
@@ -159,7 +163,10 @@ class LeadHandler {
 
 
             if (entities[Entities.AGENT_NAME] && (role === 'Principal' || role === 'BusinessHead' || role === 'SalesDirector')) {
-                const agentUsers = await userService.getUsers(tenantId, { $text: { $search: entities[Entities.AGENT_NAME] } }); // Using text search for name
+                // Attempt to find user by name. This is a simplification.
+                // A more robust solution would involve userService.getUsers with a name filter
+                // and handling multiple matches if they occur.
+                const agentUsers = await userService.getUsers(tenantId, { $text: { $search: entities[Entities.AGENT_NAME] } });
                 if (agentUsers && agentUsers.length === 1) {
                     filters.assignedTo = agentUsers[0]._id;
                 } else if (agentUsers && agentUsers.length > 1) {
@@ -168,7 +175,7 @@ class LeadHandler {
                 } else {
                     return { success: false, message: `Could not find agent named "${entities[Entities.AGENT_NAME]}".`, data: null, conversationContextUpdate: {} };
                 }
-            } else if (entities[Entities.AGENT_ID]) {
+            } else if (entities[Entities.AGENT_ID] && mongoose.Types.ObjectId.isValid(entities[Entities.AGENT_ID])) {
                 filters.assignedTo = entities[Entities.AGENT_ID];
             }
 
@@ -177,7 +184,8 @@ class LeadHandler {
 
             if (!leadsResult || leadsResult.data.length === 0) {
                 let message = "I couldn't find any leads matching your criteria.";
-                if (intent === Intents.LIST_MY_LEADS) message = "You currently have no leads assigned to you matching these criteria.";
+                if (intent === Intents.LIST_MY_LEADS && !Object.values(entities).some(e => e)) message = "You currently have no leads assigned to you."; // More specific if no filters
+                else if (intent === Intents.LIST_MY_LEADS) message = "You currently have no leads assigned to you matching these criteria.";
                 return { success: true, message: message, data: null, conversationContextUpdate: {} };
             }
 
@@ -209,7 +217,7 @@ class LeadHandler {
                 return { success: false, message: "What note would you like to add?", data: null, conversationContextUpdate: {} };
             }
 
-            const lead = await this._findLead(entities, tenantId, conversationContext, true); // askForClarification = true
+            const lead = await this._findLead(entities, tenantId, conversationContext, true);
             if (!lead) {
                 return { success: false, message: "Which lead do you want to add this note to? Please specify their name, phone, or ID.", data: null, conversationContextUpdate: {} };
             }
@@ -223,7 +231,7 @@ class LeadHandler {
             }
 
             const noteData = { content: noteContent, createdBy: userId };
-            const updatedLead = await leadService.addNote(lead._id, noteData);
+            const updatedLead = await leadService.addNote(lead._id.toString(), noteData);
 
             return {
                 success: true,
@@ -270,7 +278,7 @@ class LeadHandler {
                 createdBy: userId,
             };
 
-            const updatedLead = await leadService.addInteraction(lead._id, interactionData);
+            const updatedLead = await leadService.addInteraction(lead._id.toString(), interactionData);
 
             return {
                 success: true,
@@ -308,7 +316,7 @@ class LeadHandler {
                 return { success: false, message: "You can only update the status for leads assigned to you.", data: null, conversationContextUpdate: {} };
             }
 
-            const updatedLead = await leadService.changeLeadStatus(lead._id, newStatus.toLowerCase());
+            const updatedLead = await leadService.changeLeadStatus(lead._id.toString(), newStatus.toLowerCase());
 
             return {
                 success: true,
@@ -324,8 +332,8 @@ class LeadHandler {
 
     async handleUpdateLeadField(entities, userId, tenantId, role, conversationContext) {
         try {
-            const fieldToUpdate = entities[Entities.LEAD_FIELD_TO_UPDATE]?.toLowerCase().replace(/\s+/g, ''); // Normalize: "alternate phone" -> "alternatephone"
-            let fieldValue = entities[Entities.LEAD_FIELD_VALUE]; // General value
+            const fieldToUpdate = entities[Entities.LEAD_FIELD_TO_UPDATE]?.toLowerCase().replace(/\s+/g, '');
+            let fieldValue = entities[Entities.LEAD_FIELD_VALUE];
 
             if (!fieldToUpdate) {
                 return { success: false, message: "Which field of the lead do you want to update?", data: null, conversationContextUpdate: {} };
@@ -345,32 +353,34 @@ class LeadHandler {
             }
 
             const updateData = {};
-            let readableFieldName = entities[Entities.LEAD_FIELD_TO_UPDATE]; // For messages
+            let readableFieldName = entities[Entities.LEAD_FIELD_TO_UPDATE] || fieldToUpdate;
 
             switch (fieldToUpdate) {
-                case 'alternatephone':
-                case 'altphone':
-                    if (!fieldValue) return { success: false, message: "What is the new alternate phone number?", data: null, conversationContextUpdate: {} };
-                    updateData.alternatePhone = fieldValue;
-                    readableFieldName = readableFieldName || "alternate phone";
+                case 'alternatephone': case 'altphone':
+                    if (!fieldValue && !entities[Entities.LEAD_PHONE]) return { success: false, message: "What is the new alternate phone number?", data: null, conversationContextUpdate: {} };
+                    updateData.alternatePhone = fieldValue || entities[Entities.LEAD_PHONE]; // Allow LEAD_PHONE if specific entity not caught
+                    readableFieldName = "alternate phone";
                     break;
                 case 'email':
-                    if (!fieldValue || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fieldValue)) return { success: false, message: "Please provide a valid email address.", data: null, conversationContextUpdate: {} };
-                    updateData.email = fieldValue.toLowerCase();
-                    readableFieldName = readableFieldName || "email";
+                    if (!fieldValue && !entities[Entities.LEAD_EMAIL]) return { success: false, message: "What is the new email address?", data: null, conversationContextUpdate: {} };
+                    const emailVal = fieldValue || entities[Entities.LEAD_EMAIL];
+                    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) return { success: false, message: "Please provide a valid email address.", data: null, conversationContextUpdate: {} };
+                    updateData.email = emailVal.toLowerCase();
+                    readableFieldName = "email";
                     break;
                 case 'priority':
-                    if (!fieldValue || !['low', 'medium', 'high', 'urgent'].includes(fieldValue.toLowerCase())) {
-                        return { success: false, message: `Invalid priority "${fieldValue}". Choose from low, medium, high, urgent.`, data: null, conversationContextUpdate: {} };
+                    const priorityVal = fieldValue || entities[Entities.LEAD_PRIORITY];
+                    if (!priorityVal || !['low', 'medium', 'high', 'urgent'].includes(priorityVal.toLowerCase())) {
+                        return { success: false, message: `Invalid priority "${priorityVal}". Choose from low, medium, high, urgent.`, data: null, conversationContextUpdate: {} };
                     }
-                    updateData.priority = fieldValue.toLowerCase();
-                    readableFieldName = readableFieldName || "priority";
+                    updateData.priority = priorityVal.toLowerCase();
+                    readableFieldName = "priority";
                     break;
                 case 'requirements':
-                    fieldValue = entities[Entities.REQUIREMENTS_TEXT] || fieldValue;
-                    if (!fieldValue) return { success: false, message: "What are the new requirements for the lead?", data: null, conversationContextUpdate: {} };
-                    updateData.requirements = fieldValue;
-                    readableFieldName = readableFieldName || "requirements";
+                    const reqText = entities[Entities.REQUIREMENTS_TEXT] || fieldValue;
+                    if (!reqText) return { success: false, message: "What are the new requirements for the lead?", data: null, conversationContextUpdate: {} };
+                    updateData.requirements = reqText;
+                    readableFieldName = "requirements";
                     break;
                 case 'budget':
                     const minBudget = entities[Entities.BUDGET_MIN] ? parseFloat(entities[Entities.BUDGET_MIN]) : null;
@@ -380,51 +390,32 @@ class LeadHandler {
                         return { success: false, message: "Please specify at least a minimum or maximum budget.", data: null, conversationContextUpdate: {} };
                     }
                     updateData.budget = { min: minBudget, max: maxBudget, currency: currency };
-                    readableFieldName = readableFieldName || "budget";
+                    readableFieldName = "budget";
                     break;
                 case 'tags':
                     const tagList = entities[Entities.TAG_LIST] || fieldValue;
                     if (!tagList) return { success: false, message: "What tags would you like to add/set?", data: null, conversationContextUpdate: {} };
+                    // Preserve existing tags and add new ones, or replace if "set tags" vs "add tags"
+                    // For simplicity now, this replaces. Could be enhanced.
                     updateData.tags = tagList.split(',').map(tag => tag.trim()).filter(tag => tag);
-                    readableFieldName = readableFieldName || "tags";
+                    readableFieldName = "tags";
                     break;
-                case 'preferredunittypes':
-                case 'unittypes':
+                case 'preferredunittypes': case 'unittypes':
                     const unitTypesList = entities[Entities.PREFERRED_UNIT_TYPES_LIST] || fieldValue;
                     if (!unitTypesList) return { success: false, message: "What are the preferred unit types?", data: null, conversationContextUpdate: {} };
                     updateData.preferredUnitTypes = unitTypesList.split(',').map(type => type.trim()).filter(type => type);
-                    readableFieldName = readableFieldName || "preferred unit types";
+                    readableFieldName = "preferred unit types";
                     break;
-                case 'address': // More complex, might need sub-fields or a dedicated intent
-                case 'streetaddress':
-                case 'city':
-                case 'state':
-                case 'postalcode':
-                case 'country':
-                    // For simplicity, allow updating the whole address object or individual parts if LLM extracts them
-                    updateData.address = lead.address || {}; // Start with existing or empty
-                    if (entities[Entities.ADDRESS_STREET]) updateData.address.street = entities[Entities.ADDRESS_STREET];
-                    if (entities[Entities.ADDRESS_CITY]) updateData.address.city = entities[Entities.ADDRESS_CITY];
-                    if (entities[Entities.ADDRESS_STATE]) updateData.address.state = entities[Entities.ADDRESS_STATE];
-                    if (entities[Entities.ADDRESS_POSTAL_CODE]) updateData.address.postalCode = entities[Entities.ADDRESS_POSTAL_CODE];
-                    if (entities[Entities.ADDRESS_COUNTRY]) updateData.address.country = entities[Entities.ADDRESS_COUNTRY];
-                    if (fieldToUpdate === 'address' && fieldValue && typeof fieldValue === 'string') { // If user just says "update address to 123 Main St, Anytown"
-                        updateData.address.street = fieldValue; // Simplified, LLM needs to be good or use more entities
-                    }
-                    if (Object.keys(updateData.address).length === 0) {
-                        return { success: false, message: "Please specify the address details to update.", data: null, conversationContextUpdate: {} };
-                    }
-                    readableFieldName = readableFieldName || "address";
-                    break;
+                // Address fields can be added here similarly
                 default:
-                    return { success: false, message: `I cannot update the field "${fieldToUpdate || 'unknown'}". You can ask to update fields like priority, budget, tags, etc.`, data: null, conversationContextUpdate: {} };
+                    return { success: false, message: `I cannot update the field "${readableFieldName}". You can ask to update fields like priority, budget, tags, etc.`, data: null, conversationContextUpdate: {} };
             }
 
             if (Object.keys(updateData).length === 0) {
                 return { success: false, message: "No valid field and value provided for update.", data: null, conversationContextUpdate: {} };
             }
 
-            const updatedLead = await leadService.updateLead(lead._id, updateData);
+            const updatedLead = await leadService.updateLead(lead._id.toString(), updateData);
 
             return {
                 success: true,
@@ -442,11 +433,14 @@ class LeadHandler {
     async handleAddInterestedUnitToLead(entities, userId, tenantId, role, conversationContext) {
         try {
             const unitNumber = entities[Entities.UNIT_NUMBER];
-            const interestLevel = entities[Entities.INTEREST_LEVEL] || 'medium'; // Default interest
-            const notes = entities[Entities.NOTE_CONTENT]; // Optional notes about this interest
+            const interestLevel = (entities[Entities.INTEREST_LEVEL] || 'medium').toLowerCase();
+            const notes = entities[Entities.NOTE_CONTENT];
 
             if (!unitNumber) {
                 return { success: false, message: "Which unit number are they interested in?", data: null, conversationContextUpdate: {} };
+            }
+            if (!['low', 'medium', 'high'].includes(interestLevel)) {
+                return { success: false, message: `Invalid interest level "${entities[Entities.INTEREST_LEVEL]}". Please use low, medium, or high.`, data: null, conversationContextUpdate: {} };
             }
 
             const lead = await this._findLead(entities, tenantId, conversationContext, true);
@@ -458,50 +452,29 @@ class LeadHandler {
                 return { success: false, message: `I found multiple leads. Which one is interested in the unit?\n - ${leadOptions}\nPlease specify by ID.`, data: lead, conversationContextUpdate: {} };
             }
 
-            // Permission Check
             if (['JuniorAgent', 'SeniorAgent'].includes(role) && (!lead.assignedTo || lead.assignedTo._id.toString() !== userId)) {
                 return { success: false, message: "You can only update leads assigned to you.", data: null, conversationContextUpdate: {} };
             }
 
-            // Find the unit to get its ID
-            const projectNameFromEntity = entities[Entities.PROJECT_NAME];
-            const towerNameFromEntity = entities[Entities.TOWER_NAME];
+            const projectForUnit = await this._findProjectForUnit(entities, tenantId, conversationContext);
+            const towerForUnit = await this._findTowerForUnit(entities, tenantId, projectForUnit, conversationContext);
+            const unitToAdd = await this._findUnitForInterest(entities, tenantId, projectForUnit, towerForUnit, conversationContext);
 
-            let projectIdForUnitSearch = conversationContext.activeProjectId;
-            if (projectNameFromEntity) {
-                const proj = await this._findProjectByName(projectNameFromEntity, tenantId);
-                if (proj) projectIdForUnitSearch = proj._id;
-                else return { success: false, message: `Could not find project "${projectNameFromEntity}".`, data: null, conversationContextUpdate: {} };
+            if (!unitToAdd || Array.isArray(unitToAdd)) {
+                return { success: false, message: `Could not uniquely identify unit "${unitNumber}". Please specify project or tower if needed.`, data: null, conversationContextUpdate: {} };
             }
-
-            let towerIdForUnitSearch = conversationContext.activeTowerId;
-            if (towerNameFromEntity && projectIdForUnitSearch) {
-                const tower = await this._findTowerByName(towerNameFromEntity, projectIdForUnitSearch, tenantId);
-                if (tower) towerIdForUnitSearch = tower._id;
-                else return { success: false, message: `Could not find tower "${towerNameFromEntity}" in project "${projectNameFromEntity || conversationContext.activeProjectName}".`, data: null, conversationContextUpdate: {} };
-            }
-
-            const unitFilters = { tenantId, number: unitNumber };
-            if (towerIdForUnitSearch) unitFilters.towerId = towerIdForUnitSearch;
-            else if (projectIdForUnitSearch) unitFilters.projectId = projectIdForUnitSearch;
-
-            const unitsResult = await unitService.getUnits(unitFilters, { page: 1, limit: 1 });
-            if (!unitsResult || unitsResult.data.length === 0) {
-                return { success: false, message: `Could not find unit number "${unitNumber}". Please specify project or tower if needed.`, data: null, conversationContextUpdate: {} };
-            }
-            const unitId = unitsResult.data[0]._id;
 
             const interestData = {
-                unitId: unitId,
-                interestLevel: interestLevel.toLowerCase(),
+                unitId: unitToAdd._id.toString(),
+                interestLevel: interestLevel,
                 notes: notes
             };
 
-            const updatedLead = await leadService.addInterestedUnit(lead._id, interestData);
+            const updatedLead = await leadService.addInterestedUnit(lead._id.toString(), interestData);
 
             return {
                 success: true,
-                message: `Marked unit ${unitNumber} as an interested unit for lead ${updatedLead.fullName}.`,
+                message: `Marked unit ${unitToAdd.number} (Project: ${unitToAdd.projectId.name}) as an interested unit for lead ${updatedLead.fullName}.`,
                 data: updatedLead,
                 conversationContextUpdate: { activeLeadId: updatedLead._id.toString(), activeLeadName: updatedLead.fullName }
             };
@@ -512,21 +485,127 @@ class LeadHandler {
         }
     }
 
-    // Helper to find project by name (simplified)
-    async _findProjectByName(projectName, tenantId) {
-        const projectsResult = await require('../../services/project.service.js').getProjects(tenantId, { search: projectName, active: true }, { page: 1, limit: 1 });
-        if (projectsResult && projectsResult.data.length > 0) {
-            return projectsResult.data[0];
+    async handleAssignLeadToAgent(entities, userId, tenantId, role, conversationContext) {
+        try {
+            // Permissions: Only Principal, BusinessHead, SalesDirector can assign
+            if (!['Principal', 'BusinessHead', 'SalesDirector'].includes(role)) {
+                return { success: false, message: "You do not have permission to assign leads.", data: null, conversationContextUpdate: {} };
+            }
+
+            const agentNameOrId = entities[Entities.AGENT_NAME] || entities[Entities.AGENT_ID];
+            if (!agentNameOrId) {
+                return { success: false, message: "Which agent do you want to assign the lead to?", data: null, conversationContextUpdate: {} };
+            }
+
+            const lead = await this._findLead(entities, tenantId, conversationContext, true);
+            if (!lead) {
+                return { success: false, message: "Which lead do you want to assign? Please specify their name, phone, or ID.", data: null, conversationContextUpdate: {} };
+            }
+            if (Array.isArray(lead)) {
+                const leadOptions = lead.map(l => `${l.fullName} (Phone: ${l.phone}, ID: ${l._id})`).join('\n - ');
+                return { success: false, message: `I found multiple leads. Which one do you want to assign?\n - ${leadOptions}\nPlease specify by ID.`, data: lead, conversationContextUpdate: {} };
+            }
+
+            // Find the agent
+            let agentToAssign;
+            if (mongoose.Types.ObjectId.isValid(agentNameOrId)) {
+                agentToAssign = await userService.getUserById(agentNameOrId);
+            } else {
+                // Simplified find by name; robust version would handle multiple matches
+                const agents = await userService.getUsers(tenantId, { $text: { $search: agentNameOrId }, role: { $in: ['SeniorAgent', 'JuniorAgent', 'SalesDirector', 'BusinessHead', 'Principal'] } });
+                if (agents && agents.length === 1) {
+                    agentToAssign = agents[0];
+                } else if (agents && agents.length > 1) {
+                    const agentOptions = agents.map(a => `${a.name} (Role: ${a.role}, ID: ${a._id})`).join('\n - ');
+                    return { success: false, message: `Found multiple users matching "${agentNameOrId}":\n - ${agentOptions}\nPlease specify the agent by their ID.`, data: agents, conversationContextUpdate: {} };
+                }
+            }
+
+            if (!agentToAssign || agentToAssign.tenantId.toString() !== tenantId) {
+                return { success: false, message: `Could not find agent "${agentNameOrId}" in your organization or they are not eligible to be assigned leads.`, data: null, conversationContextUpdate: {} };
+            }
+
+            // Check if agent can be assigned leads
+            const assignableRoles = ['Principal', 'BusinessHead', 'SalesDirector', 'SeniorAgent', 'JuniorAgent'];
+            if (!assignableRoles.includes(agentToAssign.role)) {
+                return { success: false, message: `User ${agentToAssign.name} has role ${agentToAssign.role} and cannot be assigned leads directly.`, data: null, conversationContextUpdate: {} };
+            }
+
+
+            const updatedLead = await leadService.assignLead(lead._id.toString(), agentToAssign._id.toString());
+
+            return {
+                success: true,
+                message: `Lead ${updatedLead.fullName} has been assigned to ${agentToAssign.name}.`,
+                data: updatedLead,
+                conversationContextUpdate: { activeLeadId: updatedLead._id.toString(), activeLeadName: updatedLead.fullName }
+            };
+
+        } catch (error) {
+            logger.error('[LeadHandler.handleAssignLeadToAgent] Error:', error);
+            return this._handleError(error, "assigning lead to agent");
+        }
+    }
+
+    // Helper to find project for unit interest (can be from entity or context)
+    async _findProjectForUnit(entities, tenantId, conversationContext) {
+        const projectName = entities[Entities.PROJECT_NAME];
+        if (projectName) {
+            return await this._findProjectByName(projectName, tenantId);
+        }
+        if (conversationContext.activeProjectId) {
+            return await projectService.getProjectById(conversationContext.activeProjectId);
         }
         return null;
     }
-    // Helper to find tower by name within a project (simplified)
-    async _findTowerByName(towerName, projectId, tenantId) {
-        const towersResult = await require('../../services/tower.service.js').getTowers(projectId, { name: towerName, active: true }, { page: 1, limit: 1 }); // Assuming getTowers supports name filter
-        if (towersResult && towersResult.data.length > 0) {
-            return towersResult.data[0];
+
+    // Helper to find tower for unit interest
+    async _findTowerForUnit(entities, tenantId, projectContext, conversationContext) {
+        const towerName = entities[Entities.TOWER_NAME];
+        const projectId = projectContext?._id || conversationContext.activeProjectId;
+        if (towerName && projectId) {
+            return await this._findTowerByName(towerName, projectId, tenantId);
+        }
+        if (conversationContext.activeTowerId && (!towerName || (projectContext && conversationContext.activeProjectId === projectContext._id.toString()))) { // only use context tower if project context matches or no new tower name
+            const tower = await towerService.getTowerById(conversationContext.activeTowerId);
+            if (tower && tower.projectId.toString() === projectId) return tower; // Ensure tower is in the correct project context
         }
         return null;
+    }
+
+    // Helper to find a specific unit for adding to interested list
+    async _findUnitForInterest(entities, tenantId, projectContext, towerContext, conversationContext) {
+        const unitNumber = entities[Entities.UNIT_NUMBER];
+        if (!unitNumber) return null;
+
+        const filters = { tenantId, number: unitNumber };
+        if (towerContext?._id) filters.towerId = towerContext._id.toString();
+        else if (projectContext?._id) filters.projectId = projectContext._id.toString();
+        else if (conversationContext.activeTowerId) filters.towerId = conversationContext.activeTowerId;
+        else if (conversationContext.activeProjectId) filters.projectId = conversationContext.activeProjectId;
+        else { // If no project/tower context at all, this might be too broad
+            logger.warn('[LeadHandler._findUnitForInterest] Searching for unit without project/tower context.');
+        }
+
+        const unitsResult = await unitService.getUnits(filters, { page: 1, limit: 1 });
+        if (unitsResult && unitsResult.data.length === 1) {
+            return await unitService.getUnitById(unitsResult.data[0]._id); // to get populated fields
+        }
+        return null;
+    }
+
+
+    async _findProjectByName(projectName, tenantId) {
+        const projectsResult = await require('../../services/project.service.js').getProjects(tenantId, { search: projectName, active: true }, { page: 1, limit: 1 });
+        return (projectsResult && projectsResult.data.length > 0) ? projectsResult.data[0] : null;
+    }
+    async _findTowerByName(towerName, projectId, tenantId) {
+        const towersResult = await require('../../services/tower.service.js').getTowers(projectId, { name: towerName, active: true }, { page: 1, limit: 1 });
+        return (towersResult && towersResult.data.length > 0) ? towersResult.data[0] : null;
+    }
+    _formatCurrency(amount) {
+        if (amount === null || amount === undefined || isNaN(amount)) return 'N/A';
+        return '₹' + Number(amount).toLocaleString('en-IN', { maximumFractionDigits: 0 });
     }
 
     _handleError(error, actionDescription) {
