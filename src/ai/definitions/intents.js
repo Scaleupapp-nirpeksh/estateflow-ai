@@ -1,26 +1,23 @@
 // src/ai/definitions/intents.js
+// Add new intents and keep existing ones
 
-/**
- * Defines the intents that the Conversational AI can understand.
- * These should be mapped to specific actions or information retrieval tasks.
- */
 const Intents = Object.freeze({
     // --- Phase 1 Intents ---
     // Basic
     GREETING: 'GREETING',
     GOODBYE: 'GOODBYE',
     HELP: 'HELP',
-    UNKNOWN: 'UNKNOWN', // Fallback for unrecognized input
+    UNKNOWN: 'UNKNOWN',
 
     // Inventory Intelligence (Feature 3.1)
     GET_AVAILABLE_UNITS: 'GET_AVAILABLE_UNITS',
     GET_UNIT_DETAILS: 'GET_UNIT_DETAILS',
-    GET_UNIT_PRICE: 'GET_UNIT_PRICE',
+    GET_UNIT_PRICE: 'GET_UNIT_PRICE', // Will implement handler for this
     LIST_PROJECTS: 'LIST_PROJECTS',
     GET_PROJECT_DETAILS: 'GET_PROJECT_DETAILS',
-    GET_TOWER_DETAILS: 'GET_TOWER_DETAILS',
-    GET_PROJECT_UNIT_STATS: 'GET_PROJECT_UNIT_STATS',
-    GET_TOWER_CONSTRUCTION_STATUS: 'GET_TOWER_CONSTRUCTION_STATUS',
+    GET_TOWER_DETAILS: 'GET_TOWER_DETAILS', // Will implement handler
+    GET_PROJECT_UNIT_STATS: 'GET_PROJECT_UNIT_STATS', // Will implement handler
+    GET_TOWER_CONSTRUCTION_STATUS: 'GET_TOWER_CONSTRUCTION_STATUS', // Will implement handler
 
     // Lead Management Assistant (Feature 3.2)
     GET_LEAD_DETAILS: 'GET_LEAD_DETAILS',
@@ -29,6 +26,8 @@ const Intents = Object.freeze({
     LOG_LEAD_INTERACTION: 'LOG_LEAD_INTERACTION',
     UPDATE_LEAD_STATUS: 'UPDATE_LEAD_STATUS',
     LIST_LEADS_BY_CRITERIA: 'LIST_LEADS_BY_CRITERIA',
+    UPDATE_LEAD_FIELD: 'UPDATE_LEAD_FIELD', // New: For updating specific lead fields
+    ADD_INTERESTED_UNIT_TO_LEAD: 'ADD_INTERESTED_UNIT_TO_LEAD', // New
 
     // Booking Information Access (Feature 3.3)
     GET_BOOKING_DETAILS: 'GET_BOOKING_DETAILS',
@@ -48,18 +47,11 @@ const Intents = Object.freeze({
     ASSIGN_LEAD_TO_AGENT: 'ASSIGN_LEAD_TO_AGENT',
 
     // --- Phase 2 Intents (Placeholders) ---
-    // Complex Action Chains (Feature 3.7)
     COMPLEX_UNIT_INQUIRY_AND_COST_SHEET: 'COMPLEX_UNIT_INQUIRY_AND_COST_SHEET',
-
-    // Initiating Approval Workflows (Feature 3.11)
     REQUEST_DISCOUNT_APPROVAL: 'REQUEST_DISCOUNT_APPROVAL',
     REQUEST_CANCELLATION_APPROVAL: 'REQUEST_CANCELLATION_APPROVAL',
-
-    // Basic Document Interaction (Feature 3.9)
     GET_DOCUMENT_DETAIL: 'GET_DOCUMENT_DETAIL',
     FIND_DOCUMENT: 'FIND_DOCUMENT',
-
-    // Calendar & Task Integration (Read-Only initially) (Feature 3.10)
     GET_MY_SCHEDULE: 'GET_MY_SCHEDULE',
     LIST_PENDING_FOLLOWUPS: 'LIST_PENDING_FOLLOWUPS',
 });

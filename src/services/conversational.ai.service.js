@@ -4,8 +4,8 @@ const logger = require('../utils/logger');
 const nluEngineService = require('./nlu.engine.service.js');
 const Intents = require('../ai/definitions/intents.js');
 const basicHandler = require('../ai/actionHandlers/basic.handler.js');
-const inventoryHandler = require('../ai/actionHandlers/inventory.handler.js'); // Added
-// const leadHandler = require('../ai/actionHandlers/lead.handler.js'); // Placeholder
+const inventoryHandler = require('../ai/actionHandlers/inventory.handler.js');
+const leadHandler = require('../ai/actionHandlers/lead.handler.js');
 
 class ConversationalAIService {
     constructor() {
@@ -19,11 +19,39 @@ class ConversationalAIService {
             [Intents.GET_PROJECT_DETAILS]: inventoryHandler.handleGetProjectDetails.bind(inventoryHandler),
             [Intents.GET_AVAILABLE_UNITS]: inventoryHandler.handleGetAvailableUnits.bind(inventoryHandler),
             [Intents.GET_UNIT_DETAILS]: inventoryHandler.handleGetUnitDetails.bind(inventoryHandler),
-            // Add other inventory intents here as they are implemented in the handler
-            // [Intents.GET_UNIT_PRICE]: inventoryHandler.handleGetUnitPrice.bind(inventoryHandler),
-            // [Intents.GET_TOWER_DETAILS]: inventoryHandler.handleGetTowerDetails.bind(inventoryHandler),
+            [Intents.GET_UNIT_PRICE]: inventoryHandler.handleGetUnitPrice.bind(inventoryHandler),
+            [Intents.GET_TOWER_DETAILS]: inventoryHandler.handleGetTowerDetails.bind(inventoryHandler),
+            [Intents.GET_PROJECT_UNIT_STATS]: inventoryHandler.handleGetProjectUnitStats.bind(inventoryHandler),
+            [Intents.GET_TOWER_CONSTRUCTION_STATUS]: inventoryHandler.handleGetTowerConstructionStatus.bind(inventoryHandler),
+
+
+            // Lead Intents
+            [Intents.GET_LEAD_DETAILS]: leadHandler.handleGetLeadDetails.bind(leadHandler),
+            [Intents.LIST_MY_LEADS]: (entities, userId, tenantId, role, context) => leadHandler.handleListLeads(entities, userId, tenantId, role, context, Intents.LIST_MY_LEADS),
+            [Intents.LIST_LEADS_BY_CRITERIA]: (entities, userId, tenantId, role, context) => leadHandler.handleListLeads(entities, userId, tenantId, role, context, Intents.LIST_LEADS_BY_CRITERIA),
+            [Intents.CREATE_LEAD_NOTE]: leadHandler.handleCreateLeadNote.bind(leadHandler),
+            [Intents.LOG_LEAD_INTERACTION]: leadHandler.handleLogLeadInteraction.bind(leadHandler),
+            [Intents.UPDATE_LEAD_STATUS]: leadHandler.handleUpdateLeadStatus.bind(leadHandler),
+            [Intents.UPDATE_LEAD_FIELD]: leadHandler.handleUpdateLeadField.bind(leadHandler), // New
+            [Intents.ADD_INTERESTED_UNIT_TO_LEAD]: leadHandler.handleAddInterestedUnitToLead.bind(leadHandler), // New
+
+            // Simple Task Execution (from previous sprints, ensure they are still mapped if separate)
+            [Intents.LOCK_UNIT]: inventoryHandler.handleLockUnit ? inventoryHandler.handleLockUnit.bind(inventoryHandler) : this._notImplementedHandler.bind(this, Intents.LOCK_UNIT), // Assuming LOCK_UNIT is in inventoryHandler
+            [Intents.RELEASE_UNIT]: inventoryHandler.handleReleaseUnit ? inventoryHandler.handleReleaseUnit.bind(inventoryHandler) : this._notImplementedHandler.bind(this, Intents.RELEASE_UNIT),
+            [Intents.ASSIGN_LEAD_TO_AGENT]: leadHandler.handleAssignLeadToAgent ? leadHandler.handleAssignLeadToAgent.bind(leadHandler) : this._notImplementedHandler.bind(this, Intents.ASSIGN_LEAD_TO_AGENT),
         };
     }
+
+    async _notImplementedHandler(intentName, entities, userId, tenantId, role, conversationContext) {
+        logger.warn(`[ConversationalAIService] Intent ${intentName} is defined but its handler is not yet implemented.`);
+        return {
+            success: false,
+            message: `I understand you want to ${intentName.toLowerCase().replace(/_/g, ' ')}, but I'm not equipped to do that yet.`,
+            data: null,
+            conversationContextUpdate: {}
+        };
+    }
+
 
     async processMessage(userId, tenantId, role, userMessage, conversationContext = {}) {
         logger.info(`[ConversationalAIService] Processing message for user ${userId} in tenant ${tenantId}: "${userMessage}"`);
@@ -34,7 +62,7 @@ class ConversationalAIService {
                 success: false,
                 message: "Please provide a message.",
                 data: null,
-                conversationContextUpdate: conversationContext,
+                conversationContextUpdate: conversationContext, // Return original context
             };
         }
 
@@ -51,7 +79,6 @@ class ConversationalAIService {
 
         if (handlerFunction) {
             try {
-                // Pass the current updatedContext to the handler
                 actionResult = await handlerFunction(nluOutput.entities, userId, tenantId, role, updatedContext);
             } catch (error) {
                 logger.error(`[ConversationalAIService] Error executing action for intent ${nluOutput.intent}:`, error);
@@ -60,7 +87,7 @@ class ConversationalAIService {
                     message: `Sorry, I encountered an error while trying to ${nluOutput.intent.toLowerCase().replace(/_/g, ' ')}. Please try again.`,
                     data: null,
                     errorDetails: process.env.NODE_ENV === 'development' ? error.message : undefined,
-                    conversationContextUpdate: {} // Reset or specific error context
+                    conversationContextUpdate: {}
                 };
             }
         } else if (nluOutput.intent === Intents.UNKNOWN || nluOutput.error) {
@@ -70,19 +97,13 @@ class ConversationalAIService {
             }
         } else {
             logger.warn(`[ConversationalAIService] No action handler found for intent: ${nluOutput.intent}`);
-            actionResult = {
-                success: false,
-                message: `I'm not sure how to handle the request for "${nluOutput.intent.toLowerCase().replace(/_/g, ' ')}" yet.`,
-                data: null,
-                conversationContextUpdate: {}
-            };
+            // Use the _notImplementedHandler for defined but unmapped intents
+            actionResult = await this._notImplementedHandler(nluOutput.intent, nluOutput.entities, userId, tenantId, role, updatedContext);
         }
 
-        // Merge context updates from the action result into the updatedContext
-        // The handler function itself returns conversationContextUpdate
         if (actionResult && actionResult.conversationContextUpdate) {
             updatedContext = this._manageContext(updatedContext, actionResult.conversationContextUpdate);
-            delete actionResult.conversationContextUpdate; // Remove from final response to client
+            delete actionResult.conversationContextUpdate;
         }
 
         logger.info(`[ConversationalAIService] Responding to user ${userId}: "${actionResult.message}"`);
@@ -90,22 +111,22 @@ class ConversationalAIService {
     }
 
     _manageContext(currentContext, updates) {
-        // Simple merge. More sophisticated logic can be added for history, summarization, etc.
-        // Ensure that specific null/undefined values in updates don't accidentally clear existing context if that's not desired.
         const newContext = { ...currentContext };
         for (const key in updates) {
-            if (updates[key] !== undefined) { // Only update if value is provided
-                newContext[key] = updates[key];
+            if (updates[key] !== undefined) { // Only update/add if value is provided
+                if (updates[key] === null && newContext[key] !== undefined) { // Allow explicit clearing of a context field
+                    delete newContext[key];
+                } else if (updates[key] !== null) {
+                    newContext[key] = updates[key];
+                }
             }
         }
-
         if (newContext.endConversation) {
-            // For a true reset, return a completely new initial context object
-            // For now, just marking it as ended, the client might handle full reset.
-            return { conversationEnded: true };
+            return { conversationEnded: true }; // Signal to client to potentially reset context
         }
-        // Prune old context if it gets too large
-        // delete newContext.lastNLUOutput; // Example: don't keep too much history
+        // Clean up transient NLU output from context to prevent it from growing indefinitely
+        // delete newContext.lastNLUOutput; 
+        // delete newContext.lastUserMessage;
         return newContext;
     }
 }

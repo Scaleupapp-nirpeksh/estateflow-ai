@@ -16,20 +16,13 @@ class NLUEngineService {
             apiKey: config.llm.apiKey,
         });
         this.model = config.llm.model || 'gpt-4o-mini';
-        this.maxTokens = config.llm.maxTokens || 200; // Slightly increased for potentially more complex entity extraction
-        this.temperature = config.llm.temperature || 0.2; // Keep low for NLU
+        this.maxTokens = config.llm.maxTokens || 250; // Increased for more complex parsing
+        this.temperature = config.llm.temperature || 0.2;
     }
 
-    /**
-     * Understands the user's text and returns a structured NLU output.
-     * @param {string} text - The user's input message.
-     * @param {Object} conversationContext - The current conversation context.
-     * @returns {Promise<Object>} - An object like { intent: string, entities: Object, confidence: number, rawResponse: string }.
-     */
     async understand(text, conversationContext = {}) {
         try {
             const prompt = this._buildPrompt(text, conversationContext);
-
             logger.debug(`[NLUEngineService] Sending prompt to OpenAI: ${prompt}`);
 
             const completion = await this.openai.chat.completions.create({
@@ -51,10 +44,8 @@ class NLUEngineService {
 
             const rawResponse = completion.choices[0].message.content;
             logger.debug(`[NLUEngineService] Raw response from OpenAI: ${rawResponse}`);
-
             const parsedNLU = this._parseLLMResponse(rawResponse, text);
             return parsedNLU;
-
         } catch (error) {
             logger.error('[NLUEngineService] Error calling OpenAI API:', {
                 message: error.message,
@@ -70,14 +61,9 @@ class NLUEngineService {
         }
     }
 
-    /**
-     * Constructs the system message for the LLM.
-     * This message guides the LLM on its role and expected output format.
-     * @returns {string} The system message.
-     */
     _getSystemMessage() {
         const intentList = Object.values(Intents).join(', ');
-        // Provide more specific examples for entity extraction
+        // Add examples for UPDATE_LEAD_FIELD
         return `You are an NLU (Natural Language Understanding) engine for EstateFlow AI, a real estate management platform.
 Your task is to analyze user input and identify the user's intent and any relevant entities.
 Respond ONLY with a valid JSON object containing "intent" and "entities".
@@ -94,16 +80,17 @@ Entity Extraction Examples:
   Entities: {"${Entities.UNIT_TYPE}": "3BHK", "${Entities.PROJECT_NAME}": "Sunrise Towers", "${Entities.MAX_PRICE}": "20000000"}
 - User: "What is the price of unit A-101 in 'Greenwood Estates'?"
   Entities: {"${Entities.UNIT_NUMBER}": "A-101", "${Entities.PROJECT_NAME}": "Greenwood Estates"}
-- User: "List all projects in Mumbai"
-  Entities: {"${Entities.LOCATION}": "Mumbai"}
-- User: "details for unit B-202"
-  Entities: {"${Entities.UNIT_NUMBER}": "B-202"}
-- User: "show me my new leads"
-  Entities: {"${Entities.STATUS_VALUE}": "new"} (implicitly for leads)
-- User: "log a call with John Doe about project Alpha"
-  Entities: {"${Entities.INTERACTION_TYPE}": "call", "${Entities.LEAD_NAME}": "John Doe", "${Entities.PROJECT_NAME}": "Alpha"}
-- User: "lock unit C-501 for 90 minutes"
-  Entities: {"${Entities.UNIT_NUMBER}": "C-501", "${Entities.DURATION}": "90 minutes"}
+- User: "update lead John Doe's priority to high"
+  Entities: {"${Entities.LEAD_NAME}": "John Doe", "${Entities.LEAD_FIELD_TO_UPDATE}": "priority", "${Entities.LEAD_FIELD_VALUE}": "high"}
+- User: "set budget for lead Jane Smith from 1.5 crore to 2 crore INR"
+  Entities: {"${Entities.LEAD_NAME}": "Jane Smith", "${Entities.LEAD_FIELD_TO_UPDATE}": "budget", "${Entities.BUDGET_MIN}": "15000000", "${Entities.BUDGET_MAX}": "20000000", "${Entities.BUDGET_CURRENCY}": "INR"}
+- User: "add tags HNI, Investor for lead ID 12345"
+  Entities: {"${Entities.LEAD_ID}": "12345", "${Entities.LEAD_FIELD_TO_UPDATE}": "tags", "${Entities.TAG_LIST}": "HNI, Investor"}
+- User: "set preferred unit types for lead Mike Ross to 2bhk and 3bhk penthouse"
+  Entities: {"${Entities.LEAD_NAME}": "Mike Ross", "${Entities.LEAD_FIELD_TO_UPDATE}": "preferredUnitTypes", "${Entities.PREFERRED_UNIT_TYPES_LIST}": "2bhk, 3bhk penthouse"}
+- User: "mark unit B-202 in Palm Springs as interested for lead Sarah Connor with high interest"
+  Entities: {"${Entities.UNIT_NUMBER}": "B-202", "${Entities.PROJECT_NAME}": "Palm Springs", "${Entities.LEAD_NAME}": "Sarah Connor", "${Entities.INTEREST_LEVEL}": "high"}
+
 
 Focus on the primary intent. If the user asks a question that seems out of scope for real estate management, try to map it to "HELP" or "UNKNOWN".
 Output JSON format:
@@ -121,55 +108,26 @@ Output JSON format:
         if (conversationContext && conversationContext.activeProjectName) {
             contextualInfo += ` Current active project context: "${conversationContext.activeProjectName}".`;
         }
-        if (conversationContext && conversationContext.activeTowerName) {
-            contextualInfo += ` Current active tower context: "${conversationContext.activeTowerName}".`;
-        }
-        if (conversationContext && conversationContext.activeUnitNumber) {
-            contextualInfo += ` Current active unit context: "${conversationContext.activeUnitNumber}".`;
-        }
         if (conversationContext && conversationContext.activeLeadName) {
-            contextualInfo += ` Current active lead context: "${conversationContext.activeLeadName}".`;
+            contextualInfo += ` Current active lead context: "${conversationContext.activeLeadName}" (ID: ${conversationContext.activeLeadId || 'unknown'}).`;
         }
-        // Add more context as needed
-
         return `User input: "${text}"\n${contextualInfo}\nIdentify the intent and entities based on the system instructions. Respond with JSON.`;
     }
 
     _parseLLMResponse(llmResponse, originalText) {
         try {
             const parsedJson = JSON.parse(llmResponse);
-
             const intent = Object.values(Intents).includes(parsedJson.intent)
                 ? parsedJson.intent
                 : Intents.UNKNOWN;
-
             const entities = parsedJson.entities && typeof parsedJson.entities === 'object'
                 ? parsedJson.entities
                 : {};
-
-            // Basic confidence, can be refined if LLM provides it
             const confidence = intent === Intents.UNKNOWN ? 0.5 : 0.9;
-
-            return {
-                intent,
-                entities,
-                confidence,
-                originalText,
-                rawResponse: llmResponse,
-            };
+            return { intent, entities, confidence, originalText, rawResponse: llmResponse };
         } catch (error) {
-            logger.warn('[NLUEngineService] Failed to parse LLM JSON response:', {
-                response: llmResponse,
-                error: error.message,
-            });
-            return {
-                intent: Intents.UNKNOWN,
-                entities: {},
-                confidence: 0.0,
-                originalText,
-                error: 'Failed to parse NLU response.',
-                rawResponse: llmResponse,
-            };
+            logger.warn('[NLUEngineService] Failed to parse LLM JSON response:', { response: llmResponse, error: error.message });
+            return { intent: Intents.UNKNOWN, entities: {}, confidence: 0.0, originalText, error: 'Failed to parse NLU response.', rawResponse: llmResponse };
         }
     }
 }

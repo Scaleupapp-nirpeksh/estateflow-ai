@@ -1,59 +1,69 @@
 // src/ai/definitions/entities.js
-// Corrected content for entities.js
+// Add new entities and keep existing ones
 
-/**
- * Defines the types of entities that the NLU engine will extract from user input.
- * These entities provide the parameters for actions and queries.
- */
 const Entities = Object.freeze({
     // Common Entities
     PROJECT_NAME: 'PROJECT_NAME',
     TOWER_NAME: 'TOWER_NAME',
-    UNIT_NUMBER: 'UNIT_NUMBER', // e.g., "A-101"
-    UNIT_ID: 'UNIT_ID', // MongoDB ObjectId
-    LEAD_ID: 'LEAD_ID', // MongoDB ObjectId or custom ID
+    UNIT_NUMBER: 'UNIT_NUMBER',
+    UNIT_ID: 'UNIT_ID',
+    LEAD_ID: 'LEAD_ID',
     LEAD_NAME: 'LEAD_NAME',
     LEAD_PHONE: 'LEAD_PHONE',
     LEAD_EMAIL: 'LEAD_EMAIL',
-    BOOKING_ID: 'BOOKING_ID', // MongoDB ObjectId
-    BOOKING_NUMBER: 'BOOKING_NUMBER', // e.g., "BK-25-05-0001"
+    BOOKING_ID: 'BOOKING_ID',
+    BOOKING_NUMBER: 'BOOKING_NUMBER',
     AGENT_NAME: 'AGENT_NAME',
-    AGENT_ID: 'AGENT_ID', // MongoDB ObjectId
+    AGENT_ID: 'AGENT_ID',
     CUSTOMER_NAME: 'CUSTOMER_NAME',
-    DATE: 'DATE', // Specific date
-    DATE_RANGE: 'DATE_RANGE', // e.g., "last week", "next month"
-    TIME_PERIOD: 'TIME_PERIOD', // e.g., "this month", "last quarter"
-    DURATION: 'DURATION', // e.g., "60 minutes", "2 hours"
+    DATE: 'DATE',
+    DATE_RANGE: 'DATE_RANGE',
+    TIME_PERIOD: 'TIME_PERIOD',
+    DURATION: 'DURATION',
     AMOUNT: 'AMOUNT',
     PERCENTAGE: 'PERCENTAGE',
-    LOCATION: 'LOCATION', // e.g., "Mumbai", "North Bangalore"
-    STATUS_VALUE: 'STATUS_VALUE', // e.g., "available", "qualified", "approved"
-    FILTER_CRITERIA: 'FILTER_CRITERIA', // Generic for various filters
+    LOCATION: 'LOCATION', // e.g., City
+    STATUS_VALUE: 'STATUS_VALUE',
+    FILTER_CRITERIA: 'FILTER_CRITERIA',
 
     // Inventory Specific
-    UNIT_TYPE: 'UNIT_TYPE', // e.g., "3BHK", "Office Space"
+    UNIT_TYPE: 'UNIT_TYPE',
     MIN_PRICE: 'MIN_PRICE',
     MAX_PRICE: 'MAX_PRICE',
     MIN_AREA: 'MIN_AREA',
     MAX_AREA: 'MAX_AREA',
-    AREA_TYPE: 'AREA_TYPE', // e.g., "carpet area", "super built-up area"
-    AMENITY_TYPE: 'AMENITY_TYPE', // e.g., "garden-facing", "sea view"
+    AREA_TYPE: 'AREA_TYPE',
+    AMENITY_TYPE: 'AMENITY_TYPE',
     CONSTRUCTION_STATUS: 'CONSTRUCTION_STATUS',
 
     // Lead Specific
     NOTE_CONTENT: 'NOTE_CONTENT',
-    INTERACTION_TYPE: 'INTERACTION_TYPE', // e.g., "call", "email"
+    INTERACTION_TYPE: 'INTERACTION_TYPE',
     INTERACTION_DETAILS: 'INTERACTION_DETAILS',
     INTERACTION_OUTCOME: 'INTERACTION_OUTCOME',
     LEAD_SOURCE: 'LEAD_SOURCE',
     LEAD_PRIORITY: 'LEAD_PRIORITY',
+    LEAD_FIELD_TO_UPDATE: 'LEAD_FIELD_TO_UPDATE', // New: e.g., "budget", "alternate phone", "tags"
+    LEAD_FIELD_VALUE: 'LEAD_FIELD_VALUE',       // New: The actual value for the field
+    BUDGET_MIN: 'BUDGET_MIN',                   // New
+    BUDGET_MAX: 'BUDGET_MAX',                   // New
+    BUDGET_CURRENCY: 'BUDGET_CURRENCY',         // New
+    REQUIREMENTS_TEXT: 'REQUIREMENTS_TEXT',     // New
+    TAG_LIST: 'TAG_LIST',                       // New: e.g., "HNI, Investor"
+    ADDRESS_STREET: 'ADDRESS_STREET',           // New
+    ADDRESS_CITY: 'ADDRESS_CITY',               // New
+    ADDRESS_STATE: 'ADDRESS_STATE',             // New
+    ADDRESS_POSTAL_CODE: 'ADDRESS_POSTAL_CODE', // New
+    ADDRESS_COUNTRY: 'ADDRESS_COUNTRY',         // New
+    PREFERRED_UNIT_TYPES_LIST: 'PREFERRED_UNIT_TYPES_LIST', // New
+    INTEREST_LEVEL: 'INTEREST_LEVEL', // New for interested units
 
     // Approval Specific
     JUSTIFICATION_TEXT: 'JUSTIFICATION_TEXT',
 
     // Document Specific
-    DOCUMENT_TYPE: 'DOCUMENT_TYPE', // e.g., "cost sheet", "agreement"
-    KEY_TERM_TO_SEARCH: 'KEY_TERM_TO_SEARCH', // For searching within document content
+    DOCUMENT_TYPE: 'DOCUMENT_TYPE',
+    KEY_TERM_TO_SEARCH: 'KEY_TERM_TO_SEARCH',
 });
 
 module.exports = Entities;
