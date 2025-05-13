@@ -1,0 +1,67 @@
+// src/ai/definitions/intents.js
+
+/**
+ * Defines the intents that the Conversational AI can understand.
+ * These should be mapped to specific actions or information retrieval tasks.
+ */
+const Intents = Object.freeze({
+    // --- Phase 1 Intents ---
+    // Basic
+    GREETING: 'GREETING',
+    GOODBYE: 'GOODBYE',
+    HELP: 'HELP',
+    UNKNOWN: 'UNKNOWN', // Fallback for unrecognized input
+
+    // Inventory Intelligence (Feature 3.1)
+    GET_AVAILABLE_UNITS: 'GET_AVAILABLE_UNITS',
+    GET_UNIT_DETAILS: 'GET_UNIT_DETAILS',
+    GET_UNIT_PRICE: 'GET_UNIT_PRICE',
+    LIST_PROJECTS: 'LIST_PROJECTS',
+    GET_PROJECT_DETAILS: 'GET_PROJECT_DETAILS',
+    GET_TOWER_DETAILS: 'GET_TOWER_DETAILS',
+    GET_PROJECT_UNIT_STATS: 'GET_PROJECT_UNIT_STATS',
+    GET_TOWER_CONSTRUCTION_STATUS: 'GET_TOWER_CONSTRUCTION_STATUS',
+
+    // Lead Management Assistant (Feature 3.2)
+    GET_LEAD_DETAILS: 'GET_LEAD_DETAILS',
+    LIST_MY_LEADS: 'LIST_MY_LEADS',
+    CREATE_LEAD_NOTE: 'CREATE_LEAD_NOTE',
+    LOG_LEAD_INTERACTION: 'LOG_LEAD_INTERACTION',
+    UPDATE_LEAD_STATUS: 'UPDATE_LEAD_STATUS',
+    LIST_LEADS_BY_CRITERIA: 'LIST_LEADS_BY_CRITERIA',
+
+    // Booking Information Access (Feature 3.3)
+    GET_BOOKING_DETAILS: 'GET_BOOKING_DETAILS',
+    LIST_RECENT_BOOKINGS: 'LIST_RECENT_BOOKINGS',
+
+    // Payment Schedule Queries (Feature 3.4)
+    GET_PAYMENT_SCHEDULE: 'GET_PAYMENT_SCHEDULE',
+    LIST_OVERDUE_PAYMENTS: 'LIST_OVERDUE_PAYMENTS',
+
+    // Basic Reporting & Analytics Queries (Feature 3.5)
+    GET_SALES_PERFORMANCE_SUMMARY: 'GET_SALES_PERFORMANCE_SUMMARY',
+    GET_LEAD_CONVERSION_RATE: 'GET_LEAD_CONVERSION_RATE',
+
+    // Simple Task Execution (Feature 3.6)
+    LOCK_UNIT: 'LOCK_UNIT',
+    RELEASE_UNIT: 'RELEASE_UNIT',
+    ASSIGN_LEAD_TO_AGENT: 'ASSIGN_LEAD_TO_AGENT',
+
+    // --- Phase 2 Intents (Placeholders) ---
+    // Complex Action Chains (Feature 3.7)
+    COMPLEX_UNIT_INQUIRY_AND_COST_SHEET: 'COMPLEX_UNIT_INQUIRY_AND_COST_SHEET',
+
+    // Initiating Approval Workflows (Feature 3.11)
+    REQUEST_DISCOUNT_APPROVAL: 'REQUEST_DISCOUNT_APPROVAL',
+    REQUEST_CANCELLATION_APPROVAL: 'REQUEST_CANCELLATION_APPROVAL',
+
+    // Basic Document Interaction (Feature 3.9)
+    GET_DOCUMENT_DETAIL: 'GET_DOCUMENT_DETAIL',
+    FIND_DOCUMENT: 'FIND_DOCUMENT',
+
+    // Calendar & Task Integration (Read-Only initially) (Feature 3.10)
+    GET_MY_SCHEDULE: 'GET_MY_SCHEDULE',
+    LIST_PENDING_FOLLOWUPS: 'LIST_PENDING_FOLLOWUPS',
+});
+
+module.exports = Intents;
