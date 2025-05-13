@@ -2,7 +2,7 @@
 
 const mongoose = require('mongoose');
 const Lead = require('../models/lead.model');
-const User = require('../models/user.model');
+const User = require('../models/user.model'); // Assuming this is used elsewhere or for future validation
 const { ApiError } = require('../utils/error-handler');
 const logger = require('../utils/logger');
 
@@ -13,7 +13,9 @@ const logger = require('../utils/logger');
  */
 const createLead = async (leadData) => {
     try {
-        // Check if lead with this phone already exists for the tenant
+        // Ensure tenantId is properly formatted if it's a string; Mongoose typically handles this on save.
+        // However, for findOne, it's good practice if you expect it to be an ObjectId.
+        // If leadData.tenantId is already an ObjectId, this is fine. If it's a string, Mongoose will cast.
         const existingLead = await Lead.findOne({
             tenantId: leadData.tenantId,
             phone: leadData.phone
@@ -23,19 +25,26 @@ const createLead = async (leadData) => {
             throw new ApiError(400, 'Lead with this phone number already exists');
         }
 
-        // Create lead
         const lead = new Lead(leadData);
         await lead.save();
         return lead;
     } catch (error) {
-        logger.error('Error creating lead', { error });
+        logger.error('Error creating lead', {
+            message: error.message,
+            stack: error.stack,
+            leadData: JSON.stringify(leadData) // Be cautious with logging sensitive data
+        });
+        if (error.name === 'ValidationError') {
+            logger.error('Lead Validation Error details:', error.errors);
+        }
         throw error;
     }
 };
 
+
 /**
  * Get leads for a tenant with filtering and pagination
- * @param {string} tenantId - Tenant ID
+ * @param {string} tenantId - Tenant ID (as string)
  * @param {Object} filters - Filter options
  * @param {Object} pagination - Pagination options
  * @returns {Promise<Object>} - Leads with pagination info
@@ -46,97 +55,71 @@ const getLeads = async (tenantId, filters = {}, pagination = { page: 1, limit: 1
         const skip = (page - 1) * limit;
 
         // Build query
-        const query = { tenantId };
+        if (!mongoose.Types.ObjectId.isValid(tenantId)) {
+            throw new ApiError(400, 'Invalid Tenant ID format for filtering leads.');
+        }
+        const query = { tenantId: new mongoose.Types.ObjectId(tenantId) };
 
-        // Add status filter if provided
+        if (filters.phone) {
+            query.phone = filters.phone;
+        }
+        if (filters.email) {
+            query.email = filters.email.toLowerCase();
+        }
         if (filters.status) {
             query.status = filters.status;
         }
-
-        // Add source filter if provided
         if (filters.source) {
             query.source = filters.source;
         }
-
-        // Add priority filter if provided
         if (filters.priority) {
             query.priority = filters.priority;
         }
-
-        // Add assigned to filter if provided
-        if (filters.assignedTo) {
-            query.assignedTo = filters.assignedTo;
+        if (filters.assignedTo && mongoose.Types.ObjectId.isValid(filters.assignedTo)) {
+            query.assignedTo = new mongoose.Types.ObjectId(filters.assignedTo);
+        }
+        if (filters.projectId && mongoose.Types.ObjectId.isValid(filters.projectId)) {
+            query.projectId = new mongoose.Types.ObjectId(filters.projectId);
         }
 
-        // Add project filter if provided
-        if (filters.projectId) {
-            query.projectId = filters.projectId;
-        }
-
-        // Add search filter if provided
-        if (filters.search) {
+        if (filters.search && !filters.phone && !filters.email && !filters.fullName) {
             query.$text = { $search: filters.search };
         }
+        // If fullName is provided for regex search (from _findLeadAdvanced)
+        if (filters.fullName && typeof filters.fullName === 'object' && filters.fullName.$regex) {
+            query.fullName = filters.fullName;
+        }
 
-        // Add budget range filter if provided
+
         if (filters.minBudget || filters.maxBudget) {
-            query.budget = {};
-
-            if (filters.minBudget) {
-                query.budget['budget.min'] = { $gte: parseFloat(filters.minBudget) };
-            }
-
-            if (filters.maxBudget) {
-                query.budget['budget.max'] = { $lte: parseFloat(filters.maxBudget) };
-            }
+            if (filters.minBudget) query['budget.min'] = { $gte: parseFloat(filters.minBudget) };
+            if (filters.maxBudget) query['budget.max'] = { $lte: parseFloat(filters.maxBudget) };
         }
 
-        // Add unit type filter if provided
-        if (filters.unitType) {
-            query.preferredUnitTypes = filters.unitType;
+        if (filters.preferredUnitTypes && Array.isArray(filters.preferredUnitTypes) && filters.preferredUnitTypes.length > 0) {
+            query.preferredUnitTypes = { $in: filters.preferredUnitTypes };
         }
 
-        // Add date range filter if provided
         if (filters.fromDate || filters.toDate) {
             query.createdAt = {};
-
-            if (filters.fromDate) {
-                query.createdAt.$gte = new Date(filters.fromDate);
-            }
-
-            if (filters.toDate) {
-                query.createdAt.$lte = new Date(filters.toDate);
-            }
+            if (filters.fromDate) query.createdAt.$gte = new Date(filters.fromDate);
+            if (filters.toDate) query.createdAt.$lte = new Date(filters.toDate);
         }
 
-        // Count total documents
+        logger.debug('[leadService.getLeads] Executing query:', JSON.stringify(query));
+
         const total = await Lead.countDocuments(query);
 
-        // Determine sort order
-        let sort = { createdAt: -1 }; // Default newest first
-
+        let sort = { createdAt: -1 };
         if (filters.sort) {
             switch (filters.sort) {
-                case 'name_asc':
-                    sort = { fullName: 1 };
-                    break;
-                case 'name_desc':
-                    sort = { fullName: -1 };
-                    break;
-                case 'priority_high':
-                    sort = {
-                        priority: -1, // High priority first (urgent, high, medium, low)
-                        createdAt: -1  // Then newest first
-                    };
-                    break;
-                case 'oldest':
-                    sort = { createdAt: 1 };
-                    break;
-                // Keep default for any other value
+                case 'name_asc': sort = { fullName: 1 }; break;
+                case 'name_desc': sort = { fullName: -1 }; break;
+                case 'priority_high': sort = { priority: -1, createdAt: -1 };
+                case 'oldest': sort = { createdAt: 1 }; break;
             }
         }
 
-        // Execute query with pagination
         const leads = await Lead.find(query)
             .populate('assignedTo', 'name email role')
             .populate('projectId', 'name')
@@ -154,7 +137,12 @@ const getLeads = async (tenantId, filters = {}, pagination = { page: 1, limit: 1
             },
         };
     } catch (error) {
-        logger.error('Error getting leads', { error, tenantId });
+        logger.error('Error getting leads', {
+            message: error.message,
+            stack: error.stack,
+            tenantId,
+            filters: JSON.stringify(filters)
+        });
         throw error;
     }
 };
@@ -166,10 +154,20 @@ const getLeads = async (tenantId, filters = {}, pagination = { page: 1, limit: 1
  */
 const getLeadById = async (id) => {
     try {
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid Lead ID format');
+        }
         const lead = await Lead.findById(id)
             .populate('assignedTo', 'name email role')
             .populate('projectId', 'name city')
-            .populate('interestedUnits.unitId', 'number floor type basePrice status')
+            .populate({
+                path: 'interestedUnits.unitId',
+                select: 'number floor type basePrice status towerId projectId', // Select fields from Unit
+                populate: [ // Nested population
+                    { path: 'towerId', select: 'name' }, // Populate tower details for the unit
+                    { path: 'projectId', select: 'name' } // Populate project details for the unit
+                ]
+            })
             .populate('notes.createdBy', 'name')
             .populate('interactions.createdBy', 'name')
             .populate('attachments.uploadedBy', 'name');
@@ -177,10 +175,13 @@ const getLeadById = async (id) => {
         if (!lead) {
             throw new ApiError(404, 'Lead not found');
         }
-
         return lead;
     } catch (error) {
-        logger.error('Error getting lead', { error, leadId: id });
+        logger.error('Error getting lead by ID', {
+            message: error.message,
+            stack: error.stack,
+            leadId: id
+        });
         throw error;
     }
 };
@@ -193,203 +194,231 @@ const getLeadById = async (id) => {
  */
 const updateLead = async (id, updateData) => {
     try {
-        const lead = await Lead.findById(id);
-
-        if (!lead) {
-            throw new ApiError(404, 'Lead not found');
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid Lead ID format');
         }
 
-        // Fields that cannot be updated directly
-        const restrictedFields = ['tenantId', 'notes', 'interactions', 'interestedUnits', 'attachments'];
+        delete updateData.tenantId; // Should not be updatable
+        delete updateData.createdAt; // Should not be updatable
+        // Consider if assignedTo should be updated via a separate assignLead method
 
-        // Remove restricted fields from update data
-        restrictedFields.forEach((field) => {
-            if (updateData[field]) {
-                delete updateData[field];
-            }
-        });
-
-        // Update lead
-        Object.keys(updateData).forEach((key) => {
-            lead[key] = updateData[key];
-        });
-
-        await lead.save();
+        const lead = await Lead.findByIdAndUpdate(id, { $set: updateData }, { new: true, runValidators: true });
+        if (!lead) {
+            throw new ApiError(404, 'Lead not found for update');
+        }
         return lead;
     } catch (error) {
-        logger.error('Error updating lead', { error, leadId: id });
+        logger.error('Error updating lead', {
+            message: error.message,
+            stack: error.stack,
+            leadId: id,
+            updateData: JSON.stringify(updateData)
+        });
+        if (error.name === 'ValidationError') {
+            logger.error('Lead Update Validation Error details:', error.errors);
+        }
         throw error;
     }
 };
 
 /**
  * Add an interaction to a lead
- * @param {string} id - Lead ID
+ * @param {string} leadId - Lead ID
  * @param {Object} interaction - Interaction data
  * @returns {Promise<Lead>} - Updated lead
  */
-const addInteraction = async (id, interaction) => {
+const addInteraction = async (leadId, interaction) => {
     try {
-        const lead = await Lead.findById(id);
-
-        if (!lead) {
-            throw new ApiError(404, 'Lead not found');
+        if (!mongoose.Types.ObjectId.isValid(leadId)) {
+            throw new ApiError(400, 'Invalid Lead ID format');
         }
-
-        return await lead.addInteraction(interaction);
+        const lead = await Lead.findById(leadId);
+        if (!lead) {
+            throw new ApiError(404, 'Lead not found to add interaction');
+        }
+        lead.interactions.push(interaction);
+        await lead.save();
+        return lead;
     } catch (error) {
-        logger.error('Error adding interaction', { error, leadId: id });
+        logger.error('Error adding interaction to lead', {
+            message: error.message,
+            stack: error.stack,
+            leadId
+        });
         throw error;
     }
 };
 
 /**
  * Add a note to a lead
- * @param {string} id - Lead ID
+ * @param {string} leadId - Lead ID
  * @param {Object} note - Note data
  * @returns {Promise<Lead>} - Updated lead
  */
-const addNote = async (id, note) => {
+const addNote = async (leadId, note) => {
     try {
-        const lead = await Lead.findById(id);
-
-        if (!lead) {
-            throw new ApiError(404, 'Lead not found');
+        if (!mongoose.Types.ObjectId.isValid(leadId)) {
+            throw new ApiError(400, 'Invalid Lead ID format');
         }
-
-        return await lead.addNote(note);
+        const lead = await Lead.findById(leadId);
+        if (!lead) {
+            throw new ApiError(404, 'Lead not found to add note');
+        }
+        lead.notes.push(note);
+        await lead.save();
+        return lead;
     } catch (error) {
-        logger.error('Error adding note', { error, leadId: id });
+        logger.error('Error adding note to lead', {
+            message: error.message,
+            stack: error.stack,
+            leadId
+        });
         throw error;
     }
 };
 
 /**
- * Add interested unit to a lead
- * @param {string} id - Lead ID
- * @param {Object} interest - Interest data
+ * Mark a lead as interested in a unit
+ * @param {string} leadId - Lead ID
+ * @param {Object} interestData - Interest data { unitId, interestLevel, notes }
  * @returns {Promise<Lead>} - Updated lead
  */
-const addInterestedUnit = async (id, interest) => {
+const addInterestedUnit = async (leadId, interestData) => {
     try {
-        const lead = await Lead.findById(id);
-
+        if (!mongoose.Types.ObjectId.isValid(leadId) || (interestData.unitId && !mongoose.Types.ObjectId.isValid(interestData.unitId))) {
+            throw new ApiError(400, 'Invalid Lead ID or Unit ID format');
+        }
+        const lead = await Lead.findById(leadId);
         if (!lead) {
-            throw new ApiError(404, 'Lead not found');
+            throw new ApiError(404, 'Lead not found to add interested unit');
         }
 
-        return await lead.addInterestedUnit(interest);
+        const existingInterestIndex = lead.interestedUnits.findIndex(iu => iu.unitId.toString() === interestData.unitId.toString());
+        if (existingInterestIndex > -1) {
+            lead.interestedUnits[existingInterestIndex].interestLevel = interestData.interestLevel || lead.interestedUnits[existingInterestIndex].interestLevel;
+            lead.interestedUnits[existingInterestIndex].notes = interestData.notes || lead.interestedUnits[existingInterestIndex].notes;
+        } else {
+            lead.interestedUnits.push(interestData);
+        }
+        await lead.save();
+        return lead;
     } catch (error) {
-        logger.error('Error adding interested unit', { error, leadId: id });
+        logger.error('Error adding interested unit to lead', {
+            message: error.message,
+            stack: error.stack,
+            leadId
+        });
         throw error;
     }
 };
 
 /**
  * Assign lead to a user
- * @param {string} id - Lead ID
- * @param {string} userId - User ID
+ * @param {string} leadId - Lead ID
+ * @param {string} userIdToAssign - User ID to assign to
  * @returns {Promise<Lead>} - Updated lead
  */
-const assignLead = async (id, userId) => {
+const assignLead = async (leadId, userIdToAssign) => {
     try {
-        const lead = await Lead.findById(id);
-
+        if (!mongoose.Types.ObjectId.isValid(leadId) || !mongoose.Types.ObjectId.isValid(userIdToAssign)) {
+            throw new ApiError(400, 'Invalid Lead ID or User ID format');
+        }
+        const lead = await Lead.findById(leadId);
         if (!lead) {
-            throw new ApiError(404, 'Lead not found');
+            throw new ApiError(404, 'Lead not found for assignment');
         }
 
-        // Verify user exists
-        const user = await User.findById(userId);
-        if (!user) {
-            throw new ApiError(404, 'User not found');
-        }
+        // It's good practice to also verify the user being assigned exists and belongs to the same tenant,
+        // though this might also be handled at a higher level (e.g., in the action handler).
+        // const userToAssign = await User.findById(userIdToAssign);
+        // if (!userToAssign || userToAssign.tenantId.toString() !== lead.tenantId.toString()) {
+        //     throw new ApiError(400, 'User to assign not found or belongs to a different tenant.');
+        // }
 
-        // Verify user belongs to the same tenant
-        if (user.tenantId.toString() !== lead.tenantId.toString()) {
-            throw new ApiError(400, 'User and lead must belong to the same tenant');
-        }
-
-        // Verify user has role that can be assigned leads
-        const validRoles = ['Principal', 'BusinessHead', 'SalesDirector', 'SeniorAgent', 'JuniorAgent'];
-        if (!validRoles.includes(user.role)) {
-            throw new ApiError(400, `User with role ${user.role} cannot be assigned leads`);
-        }
-
-        lead.assignedTo = userId;
+        lead.assignedTo = userIdToAssign;
         await lead.save();
-
-        return lead;
+        return lead.populate('assignedTo', 'name email role');
     } catch (error) {
-        logger.error('Error assigning lead', { error, leadId: id, userId });
+        logger.error('Error assigning lead', {
+            message: error.message,
+            stack: error.stack,
+            leadId,
+            userIdToAssign
+        });
         throw error;
     }
 };
 
 /**
  * Change lead status
- * @param {string} id - Lead ID
- * @param {string} status - New status
+ * @param {string} leadId - Lead ID
+ * @param {string} newStatus - New status
  * @returns {Promise<Lead>} - Updated lead
  */
-const changeLeadStatus = async (id, status) => {
+const changeLeadStatus = async (leadId, newStatus) => {
     try {
-        const lead = await Lead.findById(id);
-
-        if (!lead) {
-            throw new ApiError(404, 'Lead not found');
+        if (!mongoose.Types.ObjectId.isValid(leadId)) {
+            throw new ApiError(400, 'Invalid Lead ID format');
         }
-
-        lead.status = status;
+        const lead = await Lead.findById(leadId);
+        if (!lead) {
+            throw new ApiError(404, 'Lead not found to change status');
+        }
+        lead.status = newStatus;
         await lead.save();
-
         return lead;
     } catch (error) {
-        logger.error('Error changing lead status', { error, leadId: id });
+        logger.error('Error changing lead status', {
+            message: error.message,
+            stack: error.stack,
+            leadId,
+            newStatus
+        });
         throw error;
     }
 };
 
 /**
  * Add attachment to a lead
- * @param {string} id - Lead ID
+ * @param {string} leadId - Lead ID
  * @param {Object} attachment - Attachment data
  * @returns {Promise<Lead>} - Updated lead
  */
-const addAttachment = async (id, attachment) => {
+const addAttachment = async (leadId, attachment) => {
     try {
-        const lead = await Lead.findById(id);
-
-        if (!lead) {
-            throw new ApiError(404, 'Lead not found');
+        if (!mongoose.Types.ObjectId.isValid(leadId)) {
+            throw new ApiError(400, 'Invalid Lead ID format');
         }
-
+        const lead = await Lead.findById(leadId);
+        if (!lead) {
+            throw new ApiError(404, 'Lead not found to add attachment');
+        }
         lead.attachments.push(attachment);
         await lead.save();
-
         return lead;
     } catch (error) {
-        logger.error('Error adding attachment', { error, leadId: id });
+        logger.error('Error adding attachment to lead', { error, leadId });
         throw error;
     }
 };
 
 /**
  * Delete a lead
- * @param {string} id - Lead ID
+ * @param {string} leadId - Lead ID
  * @returns {Promise<boolean>} - Success status
  */
-const deleteLead = async (id) => {
+const deleteLead = async (leadId) => {
     try {
-        const result = await Lead.deleteOne({ _id: id });
-
-        if (result.deletedCount === 0) {
-            throw new ApiError(404, 'Lead not found');
+        if (!mongoose.Types.ObjectId.isValid(leadId)) {
+            throw new ApiError(400, 'Invalid Lead ID format');
         }
-
+        const result = await Lead.deleteOne({ _id: leadId });
+        if (result.deletedCount === 0) {
+            throw new ApiError(404, 'Lead not found for deletion');
+        }
         return true;
     } catch (error) {
-        logger.error('Error deleting lead', { error, leadId: id });
+        logger.error('Error deleting lead', { error, leadId });
         throw error;
     }
 };
@@ -401,31 +430,31 @@ const deleteLead = async (id) => {
  */
 const getLeadStatistics = async (tenantId) => {
     try {
-        // Get count by status
+        if (!mongoose.Types.ObjectId.isValid(tenantId)) {
+            throw new ApiError(400, 'Invalid Tenant ID format for statistics.');
+        }
+        const tenantObjectId = new mongoose.Types.ObjectId(tenantId);
+
         const statusCounts = await Lead.aggregate([
-            { $match: { tenantId: new mongoose.Types.ObjectId(tenantId) } },
+            { $match: { tenantId: tenantObjectId } },
             { $group: { _id: '$status', count: { $sum: 1 } } },
             { $sort: { _id: 1 } }
         ]);
 
-        // Get count by source
         const sourceCounts = await Lead.aggregate([
-            { $match: { tenantId: new mongoose.Types.ObjectId(tenantId) } },
+            { $match: { tenantId: tenantObjectId } },
             { $group: { _id: '$source', count: { $sum: 1 } } },
             { $sort: { count: -1 } }
         ]);
 
-        // Get conversion rate
-        const totalLeads = await Lead.countDocuments({ tenantId });
-        const convertedLeads = await Lead.countDocuments({ tenantId, status: 'converted' });
+        const totalLeads = await Lead.countDocuments({ tenantId: tenantObjectId });
+        const convertedLeads = await Lead.countDocuments({ tenantId: tenantObjectId, status: 'converted' });
         const conversionRate = totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
 
-        // Get leads created in the last 30 days
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
         const recentLeads = await Lead.countDocuments({
-            tenantId,
+            tenantId: tenantObjectId,
             createdAt: { $gte: thirtyDaysAgo }
         });
 
@@ -434,14 +463,8 @@ const getLeadStatistics = async (tenantId) => {
             convertedLeads,
             conversionRate: conversionRate.toFixed(2),
             recentLeads,
-            byStatus: statusCounts.map(item => ({
-                status: item._id,
-                count: item.count
-            })),
-            bySource: sourceCounts.map(item => ({
-                source: item._id,
-                count: item.count
-            }))
+            byStatus: statusCounts.map(item => ({ status: item._id, count: item.count })),
+            bySource: sourceCounts.map(item => ({ source: item._id, count: item.count }))
         };
     } catch (error) {
         logger.error('Error getting lead statistics', { error, tenantId });
@@ -457,41 +480,36 @@ const getLeadStatistics = async (tenantId) => {
  */
 const importLeadsFromCSV = async (tenantId, leadsData) => {
     try {
+        if (!mongoose.Types.ObjectId.isValid(tenantId)) {
+            throw new ApiError(400, 'Invalid Tenant ID format for import.');
+        }
         if (!leadsData || !Array.isArray(leadsData) || leadsData.length === 0) {
-            throw new ApiError(400, 'No valid lead data provided');
+            throw new ApiError(400, 'No valid lead data provided for import.');
         }
 
-        const results = {
-            total: leadsData.length,
-            imported: 0,
-            skipped: 0,
-            errors: []
-        };
+        const results = { total: leadsData.length, imported: 0, skipped: 0, errors: [] };
+        const tenantObjectId = new mongoose.Types.ObjectId(tenantId); // Use consistent ObjectId
 
         for (const leadData of leadsData) {
             try {
-                // Validate required fields
                 if (!leadData.fullName || !leadData.phone) {
-                    results.errors.push(`Lead with phone ${leadData.phone || 'unknown'} is missing required fields`);
+                    results.errors.push({ message: 'Missing required fields (fullName or phone)', leadData });
                     results.skipped++;
                     continue;
                 }
 
-                // Check if lead already exists
                 const existingLead = await Lead.findOne({
-                    tenantId,
+                    tenantId: tenantObjectId,
                     phone: leadData.phone
                 });
-
                 if (existingLead) {
-                    results.errors.push(`Lead with phone ${leadData.phone} already exists`);
+                    results.errors.push({ message: `Lead with phone ${leadData.phone} already exists.`, leadData });
                     results.skipped++;
                     continue;
                 }
 
-                // Create new lead
-                const lead = new Lead({
-                    tenantId,
+                const newLeadData = {
+                    tenantId: tenantObjectId,
                     fullName: leadData.fullName,
                     email: leadData.email || null,
                     phone: leadData.phone,
@@ -500,32 +518,35 @@ const importLeadsFromCSV = async (tenantId, leadsData) => {
                     requirements: leadData.requirements || null,
                     status: leadData.status || 'new',
                     priority: leadData.priority || 'medium',
-                    projectId: leadData.projectId || null,
-                });
-
-                if (leadData.budgetMin && leadData.budgetMax) {
-                    lead.budget = {
+                    projectId: leadData.projectId && mongoose.Types.ObjectId.isValid(leadData.projectId) ? new mongoose.Types.ObjectId(leadData.projectId) : null,
+                    assignedTo: leadData.assignedTo && mongoose.Types.ObjectId.isValid(leadData.assignedTo) ? new mongoose.Types.ObjectId(leadData.assignedTo) : null,
+                    budget: (leadData.budgetMin || leadData.budgetMax) ? {
                         min: parseFloat(leadData.budgetMin) || 0,
                         max: parseFloat(leadData.budgetMax) || 0,
                         currency: leadData.currency || 'INR'
-                    };
-                }
+                    } : undefined,
+                    preferredUnitTypes: leadData.preferredUnitTypes ?
+                        leadData.preferredUnitTypes.split(',').map(type => type.trim()).filter(type => type) :
+                        [],
+                    tags: leadData.tags ? leadData.tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
+                    // Assuming address fields are flat in CSV: street, city, state, postalCode, country
+                    address: (leadData.street || leadData.city) ? {
+                        street: leadData.street,
+                        city: leadData.city,
+                        state: leadData.state,
+                        postalCode: leadData.postalCode,
+                        country: leadData.country || 'India'
+                    } : undefined,
+                };
 
-                if (leadData.preferredUnitTypes) {
-                    lead.preferredUnitTypes = leadData.preferredUnitTypes
-                        .split(',')
-                        .map(type => type.trim())
-                        .filter(type => type.length > 0);
-                }
-
+                const lead = new Lead(newLeadData);
                 await lead.save();
                 results.imported++;
             } catch (error) {
-                results.errors.push(`Error importing lead with phone ${leadData.phone || 'unknown'}: ${error.message}`);
+                results.errors.push({ message: `Error importing lead: ${error.message}`, leadData });
                 results.skipped++;
             }
         }
-
         return results;
     } catch (error) {
         logger.error('Error importing leads from CSV', { error, tenantId });

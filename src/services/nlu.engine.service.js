@@ -16,8 +16,8 @@ class NLUEngineService {
             apiKey: config.llm.apiKey,
         });
         this.model = config.llm.model || 'gpt-4o-mini';
-        this.maxTokens = config.llm.maxTokens || 250; // Increased for more complex parsing
-        this.temperature = config.llm.temperature || 0.2;
+        this.maxTokens = config.llm.maxTokens || 250;
+        this.temperature = config.llm.temperature || 0.1; // Very low for deterministic NLU
     }
 
     async understand(text, conversationContext = {}) {
@@ -63,7 +63,7 @@ class NLUEngineService {
 
     _getSystemMessage() {
         const intentList = Object.values(Intents).join(', ');
-        // Add examples for UPDATE_LEAD_FIELD
+        // Emphasize extracting all identifiers and their types.
         return `You are an NLU (Natural Language Understanding) engine for EstateFlow AI, a real estate management platform.
 Your task is to analyze user input and identify the user's intent and any relevant entities.
 Respond ONLY with a valid JSON object containing "intent" and "entities".
@@ -72,8 +72,10 @@ The "entities" should be an object where keys are entity types and values are th
 If you are unsure about the intent, classify it as "${Intents.UNKNOWN}".
 Prioritize identifying a specific intent over "${Intents.UNKNOWN}" if possible.
 
-Extract entities accurately. Do not infer or create entities that are not explicitly mentioned or clearly implied.
-If a specific value for an entity is not present, do not include the entity key in the JSON.
+Extract ALL relevant entities accurately. For example:
+- If user says "lead John Doe phone 12345", extract both LEAD_NAME and LEAD_PHONE.
+- If user says "unit A-101 in Sunrise Towers project", extract UNIT_NUMBER, TOWER_NAME, and PROJECT_NAME.
+- If a specific value for an entity is not present, do not include the entity key in the JSON.
 
 Entity Extraction Examples:
 - User: "Show available 3BHK units in 'Sunrise Towers' under 2 crores"
@@ -82,15 +84,10 @@ Entity Extraction Examples:
   Entities: {"${Entities.UNIT_NUMBER}": "A-101", "${Entities.PROJECT_NAME}": "Greenwood Estates"}
 - User: "update lead John Doe's priority to high"
   Entities: {"${Entities.LEAD_NAME}": "John Doe", "${Entities.LEAD_FIELD_TO_UPDATE}": "priority", "${Entities.LEAD_FIELD_VALUE}": "high"}
-- User: "set budget for lead Jane Smith from 1.5 crore to 2 crore INR"
-  Entities: {"${Entities.LEAD_NAME}": "Jane Smith", "${Entities.LEAD_FIELD_TO_UPDATE}": "budget", "${Entities.BUDGET_MIN}": "15000000", "${Entities.BUDGET_MAX}": "20000000", "${Entities.BUDGET_CURRENCY}": "INR"}
-- User: "add tags HNI, Investor for lead ID 12345"
-  Entities: {"${Entities.LEAD_ID}": "12345", "${Entities.LEAD_FIELD_TO_UPDATE}": "tags", "${Entities.TAG_LIST}": "HNI, Investor"}
-- User: "set preferred unit types for lead Mike Ross to 2bhk and 3bhk penthouse"
-  Entities: {"${Entities.LEAD_NAME}": "Mike Ross", "${Entities.LEAD_FIELD_TO_UPDATE}": "preferredUnitTypes", "${Entities.PREFERRED_UNIT_TYPES_LIST}": "2bhk, 3bhk penthouse"}
-- User: "mark unit B-202 in Palm Springs as interested for lead Sarah Connor with high interest"
-  Entities: {"${Entities.UNIT_NUMBER}": "B-202", "${Entities.PROJECT_NAME}": "Palm Springs", "${Entities.LEAD_NAME}": "Sarah Connor", "${Entities.INTEREST_LEVEL}": "high"}
-
+- User: "set budget for lead Jane Smith phone 555-1234 from 1.5 crore to 2 crore INR"
+  Entities: {"${Entities.LEAD_NAME}": "Jane Smith", "${Entities.LEAD_PHONE}": "555-1234", "${Entities.LEAD_FIELD_TO_UPDATE}": "budget", "${Entities.BUDGET_MIN}": "15000000", "${Entities.BUDGET_MAX}": "20000000", "${Entities.BUDGET_CURRENCY}": "INR"}
+- User: "lock unit C-501 in Tower B of Sky Residences for 2 hours"
+  Entities: {"${Entities.UNIT_NUMBER}": "C-501", "${Entities.TOWER_NAME}": "Tower B", "${Entities.PROJECT_NAME}": "Sky Residences", "${Entities.DURATION}": "2 hours"}
 
 Focus on the primary intent. If the user asks a question that seems out of scope for real estate management, try to map it to "HELP" or "UNKNOWN".
 Output JSON format:
@@ -105,10 +102,16 @@ Output JSON format:
 
     _buildPrompt(text, conversationContext) {
         let contextualInfo = '';
-        if (conversationContext && conversationContext.activeProjectName) {
-            contextualInfo += ` Current active project context: "${conversationContext.activeProjectName}".`;
+        if (conversationContext?.activeProjectName) { // Use ?. for safety
+            contextualInfo += ` Current active project context: "${conversationContext.activeProjectName}" (ID: ${conversationContext.activeProjectId || 'unknown'}).`;
         }
-        if (conversationContext && conversationContext.activeLeadName) {
+        if (conversationContext?.activeTowerName) {
+            contextualInfo += ` Current active tower context: "${conversationContext.activeTowerName}" (ID: ${conversationContext.activeTowerId || 'unknown'}).`;
+        }
+        if (conversationContext?.activeUnitNumber) {
+            contextualInfo += ` Current active unit context: "${conversationContext.activeUnitNumber}" (ID: ${conversationContext.activeUnitId || 'unknown'}).`;
+        }
+        if (conversationContext?.activeLeadName) {
             contextualInfo += ` Current active lead context: "${conversationContext.activeLeadName}" (ID: ${conversationContext.activeLeadId || 'unknown'}).`;
         }
         return `User input: "${text}"\n${contextualInfo}\nIdentify the intent and entities based on the system instructions. Respond with JSON.`;
@@ -123,7 +126,7 @@ Output JSON format:
             const entities = parsedJson.entities && typeof parsedJson.entities === 'object'
                 ? parsedJson.entities
                 : {};
-            const confidence = intent === Intents.UNKNOWN ? 0.5 : 0.9;
+            const confidence = intent === Intents.UNKNOWN ? 0.5 : 0.9; // Simplified confidence
             return { intent, entities, confidence, originalText, rawResponse: llmResponse };
         } catch (error) {
             logger.warn('[NLUEngineService] Failed to parse LLM JSON response:', { response: llmResponse, error: error.message });

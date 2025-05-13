@@ -10,104 +10,186 @@ const mongoose = require('mongoose');
 
 class InventoryHandler {
 
-    // Helper to find project by name or ID, using context
-    async _findProject(entities, tenantId, conversationContext, askForClarification = false) {
-        const projectIdFromEntity = entities['PROJECT_ID']; // Assuming LLM might use this if it's an ID
+    _escapeRegex(string) {
+        return string.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+    }
+
+    async _findProjectAdvanced(entities, tenantId, conversationContext) {
+        const projectIdFromEntity = entities['PROJECT_ID'] || entities[Entities.PROJECT_ID]; // Allow both generic ID and specific
         const projectNameFromEntity = entities[Entities.PROJECT_NAME];
 
         if (projectIdFromEntity && mongoose.Types.ObjectId.isValid(projectIdFromEntity)) {
+            logger.debug(`[InventoryHandler._findProjectAdvanced] Attempting find by explicit ID: ${projectIdFromEntity}`);
             const project = await projectService.getProjectById(projectIdFromEntity);
             if (project && project.tenantId.toString() === tenantId) return project;
         }
 
-        if (conversationContext?.activeProjectId && !projectNameFromEntity && !projectIdFromEntity) {
+        const noNewProjectIdentifier = !projectIdFromEntity && !projectNameFromEntity;
+        if (noNewProjectIdentifier && conversationContext?.activeProjectId && mongoose.Types.ObjectId.isValid(conversationContext.activeProjectId)) {
+            logger.debug(`[InventoryHandler._findProjectAdvanced] Using activeProjectId from context: ${conversationContext.activeProjectId}`);
             const project = await projectService.getProjectById(conversationContext.activeProjectId);
             if (project && project.tenantId.toString() === tenantId) return project;
         }
 
         if (projectNameFromEntity) {
-            const projectsResult = await projectService.getProjects(tenantId, { search: projectNameFromEntity, active: undefined }, { page: 1, limit: askForClarification ? 5 : 1 });
-            if (projectsResult && projectsResult.data.length > 0) {
-                if (projectsResult.data.length === 1) {
-                    return await projectService.getProjectById(projectsResult.data[0]._id); // Get full details
-                } else if (askForClarification) {
-                    return projectsResult.data; // Return array for clarification
-                }
-                logger.warn(`[InventoryHandler._findProject] Ambiguous search for project "${projectNameFromEntity}", found ${projectsResult.data.length}.`);
-                return null;
-            }
+            logger.debug(`[InventoryHandler._findProjectAdvanced] Searching by name: ${projectNameFromEntity}`);
+            const projectsResult = await projectService.getProjects(tenantId, { search: projectNameFromEntity, active: undefined }, { page: 1, limit: 5 }); // active: undefined to search all
+            if (projectsResult && projectsResult.data.length === 1) return await projectService.getProjectById(projectsResult.data[0]._id);
+            if (projectsResult && projectsResult.data.length > 1) return projectsResult.data; // Ambiguous
         }
+        logger.debug(`[InventoryHandler._findProjectAdvanced] No project found.`);
         return null;
     }
 
-    // Helper to find tower by name or ID, using project and context
-    async _findTower(entities, tenantId, projectContext, conversationContext, askForClarification = false) {
-        const towerIdFromEntity = entities['TOWER_ID'];
+    async _findTowerAdvanced(entities, tenantId, projectContextId, conversationContext) {
+        const towerIdFromEntity = entities['TOWER_ID'] || entities[Entities.TOWER_ID];
         const towerNameFromEntity = entities[Entities.TOWER_NAME];
-        let projectIdToSearchIn = projectContext?._id?.toString() || conversationContext?.activeProjectId;
 
+        let effectiveProjectId = projectContextId || conversationContext?.activeProjectId;
 
         if (towerIdFromEntity && mongoose.Types.ObjectId.isValid(towerIdFromEntity)) {
+            logger.debug(`[InventoryHandler._findTowerAdvanced] Attempting find by explicit ID: ${towerIdFromEntity}`);
             const tower = await towerService.getTowerById(towerIdFromEntity);
-            if (tower && tower.tenantId.toString() === tenantId) return tower; // Assuming tower model has tenantId
+            if (tower && tower.tenantId.toString() === tenantId && (!effectiveProjectId || tower.projectId.toString() === effectiveProjectId)) return tower;
         }
 
-        if (conversationContext?.activeTowerId && !towerNameFromEntity && !towerIdFromEntity) {
-            const tower = await towerService.getTowerById(conversationContext.activeTowerId);
-            if (tower && tower.tenantId.toString() === tenantId) return tower;
-        }
-
-        if (towerNameFromEntity && projectIdToSearchIn) {
-            const towersResult = await towerService.getTowers(projectIdToSearchIn, { name: towerNameFromEntity, active: undefined }, { page: 1, limit: askForClarification ? 5 : 1 });
-            if (towersResult && towersResult.data.length > 0) {
-                if (towersResult.data.length === 1) {
-                    return await towerService.getTowerById(towersResult.data[0]._id);
-                } else if (askForClarification) {
-                    return towersResult.data;
-                }
-                logger.warn(`[InventoryHandler._findTower] Ambiguous search for tower "${towerNameFromEntity}", found ${towersResult.data.length}.`);
-                return null;
+        const noNewTowerIdentifier = !towerIdFromEntity && !towerNameFromEntity;
+        if (noNewTowerIdentifier && conversationContext?.activeTowerId && mongoose.Types.ObjectId.isValid(conversationContext.activeTowerId)) {
+            // Ensure tower from context belongs to current project context if project context exists
+            if (effectiveProjectId && conversationContext.activeProjectId !== effectiveProjectId) {
+                logger.debug(`[InventoryHandler._findTowerAdvanced] Project context changed, ignoring activeTowerId from different project.`);
+            } else {
+                logger.debug(`[InventoryHandler._findTowerAdvanced] Using activeTowerId from context: ${conversationContext.activeTowerId}`);
+                const tower = await towerService.getTowerById(conversationContext.activeTowerId);
+                if (tower && tower.tenantId.toString() === tenantId && (!effectiveProjectId || tower.projectId.toString() === effectiveProjectId)) return tower;
             }
         }
+
+        if (towerNameFromEntity && effectiveProjectId) {
+            logger.debug(`[InventoryHandler._findTowerAdvanced] Searching for tower "${towerNameFromEntity}" in project ID "${effectiveProjectId}"`);
+            // Assuming getTowers can filter by name (regex or exact)
+            const towersResult = await towerService.getTowers(effectiveProjectId, { name: { $regex: new RegExp(this._escapeRegex(towerNameFromEntity), 'i') }, active: undefined }, { page: 1, limit: 5 });
+            if (towersResult && towersResult.data.length === 1) return await towerService.getTowerById(towersResult.data[0]._id);
+            if (towersResult && towersResult.data.length > 1) return towersResult.data; // Ambiguous
+        } else if (towerNameFromEntity && !effectiveProjectId) {
+            logger.debug(`[InventoryHandler._findTowerAdvanced] Tower name "${towerNameFromEntity}" provided without project context. Search might be inaccurate or broad.`);
+            // Potentially search across all projects for this tower name if desired, but could be slow/ambiguous.
+            // For now, require project context for tower name search if not using ID.
+            return { requiresProjectContext: true, towerName: towerNameFromEntity };
+        }
+        logger.debug(`[InventoryHandler._findTowerAdvanced] No tower found.`);
         return null;
     }
 
-    // Helper to find unit by number, using project/tower and context
-    async _findUnit(entities, tenantId, projectContext, towerContext, conversationContext, askForClarification = false) {
-        const unitNumberFromEntity = entities[Entities.UNIT_NUMBER];
+    async _findUnitAdvanced(entities, tenantId, projectContextId, towerContextId, conversationContext) {
         const unitIdFromEntity = entities[Entities.UNIT_ID];
+        const unitNumberFromEntity = entities[Entities.UNIT_NUMBER];
 
         if (unitIdFromEntity && mongoose.Types.ObjectId.isValid(unitIdFromEntity)) {
+            logger.debug(`[InventoryHandler._findUnitAdvanced] Attempting find by explicit ID: ${unitIdFromEntity}`);
             const unit = await unitService.getUnitById(unitIdFromEntity);
-            if (unit && unit.tenantId.toString() === tenantId) return unit;
+            if (unit && unit.tenantId.toString() === tenantId) {
+                // Optional: Validate against project/tower context if provided
+                if (towerContextId && unit.towerId.toString() !== towerContextId) return null; // Mismatch
+                if (projectContextId && unit.projectId.toString() !== projectContextId) return null; // Mismatch
+                return unit;
+            }
         }
 
-        if (conversationContext?.activeUnitId && !unitNumberFromEntity && !unitIdFromEntity) {
+        const noNewUnitIdentifier = !unitIdFromEntity && !unitNumberFromEntity;
+        if (noNewUnitIdentifier && conversationContext?.activeUnitId && mongoose.Types.ObjectId.isValid(conversationContext.activeUnitId)) {
+            logger.debug(`[InventoryHandler._findUnitAdvanced] Using activeUnitId from context: ${conversationContext.activeUnitId}`);
             const unit = await unitService.getUnitById(conversationContext.activeUnitId);
-            if (unit && unit.tenantId.toString() === tenantId) return unit;
+            // Optional: Validate against project/tower context
+            if (unit && unit.tenantId.toString() === tenantId) {
+                if (towerContextId && unit.towerId.toString() !== towerContextId) return null;
+                if (projectContextId && unit.projectId.toString() !== projectContextId) return null;
+                return unit;
+            }
         }
 
         if (unitNumberFromEntity) {
-            const unitFilters = { tenantId, number: unitNumberFromEntity };
-            if (towerContext?._id) unitFilters.towerId = towerContext._id.toString();
-            else if (projectContext?._id) unitFilters.projectId = projectContext._id.toString();
+            const filters = { tenantId, number: unitNumberFromEntity };
+            let effectiveTowerId = towerContextId || conversationContext?.activeTowerId;
+            let effectiveProjectId = projectContextId || conversationContext?.activeProjectId;
 
-            const unitsResult = await unitService.getUnits(unitFilters, { page: 1, limit: askForClarification ? 5 : 1 });
-            if (unitsResult && unitsResult.data.length > 0) {
-                if (unitsResult.data.length === 1) {
-                    return await unitService.getUnitById(unitsResult.data[0]._id);
-                } else if (askForClarification) {
-                    return unitsResult.data;
-                }
-                logger.warn(`[InventoryHandler._findUnit] Ambiguous search for unit "${unitNumberFromEntity}", found ${unitsResult.data.length}.`);
-                return null;
+            if (effectiveTowerId) {
+                filters.towerId = effectiveTowerId;
+                logger.debug(`[InventoryHandler._findUnitAdvanced] Searching for unit "${unitNumberFromEntity}" in tower ID "${effectiveTowerId}"`);
+            } else if (effectiveProjectId) {
+                filters.projectId = effectiveProjectId; // Search within project if tower not specified
+                logger.debug(`[InventoryHandler._findUnitAdvanced] Searching for unit "${unitNumberFromEntity}" in project ID "${effectiveProjectId}"`);
+            } else {
+                logger.debug(`[InventoryHandler._findUnitAdvanced] Searching for unit "${unitNumberFromEntity}" globally (tenant-wide). This might be ambiguous.`);
+                // Consider if global unit number search is desired or if project/tower context should be mandatory
+                return { requiresProjectOrTowerContext: true, unitNumber: unitNumberFromEntity };
             }
+
+            const unitsResult = await unitService.getUnits(filters, { page: 1, limit: 5 });
+            if (unitsResult && unitsResult.data.length === 1) return await unitService.getUnitById(unitsResult.data[0]._id);
+            if (unitsResult && unitsResult.data.length > 1) return unitsResult.data; // Ambiguous
         }
+        logger.debug(`[InventoryHandler._findUnitAdvanced] No unit found.`);
         return null;
     }
 
-    // ... (handleListProjects, handleGetProjectDetails, handleGetTowerDetails, handleGetAvailableUnits, handleGetUnitDetails, handleGetUnitPrice, handleGetProjectUnitStats, handleGetTowerConstructionStatus remain the same as Sprint 2.5)
+    // Resolve and get a single project, handling ambiguity.
+    async _resolveProject(entities, tenantId, conversationContext) {
+        const projectOrProjects = await this._findProjectAdvanced(entities, tenantId, conversationContext);
+        if (!projectOrProjects) {
+            return { error: true, message: `I couldn't find the project "${entities[Entities.PROJECT_NAME] || conversationContext.activeProjectName || 'specified'}". Please try a different name or ID.` };
+        }
+        if (Array.isArray(projectOrProjects)) {
+            const projectOptions = projectOrProjects.map(p => `${p.name} (ID: ${p._id}) in ${p.city}`).join('\n - ');
+            return { error: true, message: `I found multiple projects matching "${entities[Entities.PROJECT_NAME]}":\n - ${projectOptions}\nPlease specify by ID or be more specific.`, data: projectOrProjects };
+        }
+        return { error: false, project: projectOrProjects };
+    }
+
+    // Resolve and get a single tower, handling ambiguity.
+    async _resolveTower(entities, tenantId, projectContextId, conversationContext) {
+        const towerOrTowers = await this._findTowerAdvanced(entities, tenantId, projectContextId, conversationContext);
+        if (!towerOrTowers) {
+            let msg = `I couldn't find tower "${entities[Entities.TOWER_NAME] || conversationContext.activeTowerName || 'specified'}"`;
+            const projectName = conversationContext.activeProjectName || (entities[Entities.PROJECT_NAME] || "");
+            if (projectName) msg += ` in project ${projectName}`;
+            return { error: true, message: msg + ". Please try a different name or ID." };
+        }
+        if (towerOrTowers.requiresProjectContext) {
+            return { error: true, message: `To find tower "${towerOrTowers.towerName}", please specify which project it belongs to.` };
+        }
+        if (Array.isArray(towerOrTowers)) {
+            const towerOptions = towerOrTowers.map(t => `${t.name} (ID: ${t._id})`).join('\n - ');
+            return { error: true, message: `I found multiple towers matching "${entities[Entities.TOWER_NAME]}". Which one?\n - ${towerOptions}\nPlease specify by ID.`, data: towerOrTowers };
+        }
+        return { error: false, tower: towerOrTowers };
+    }
+
+    // Resolve and get a single unit, handling ambiguity.
+    async _resolveUnit(entities, tenantId, projectContextId, towerContextId, conversationContext) {
+        const unitOrUnits = await this._findUnitAdvanced(entities, tenantId, projectContextId, towerContextId, conversationContext);
+        if (!unitOrUnits) {
+            let msg = `I couldn't find unit "${entities[Entities.UNIT_NUMBER] || conversationContext.activeUnitNumber || 'specified'}"`;
+            const towerName = conversationContext.activeTowerName || (entities[Entities.TOWER_NAME] || "");
+            const projectName = conversationContext.activeProjectName || (entities[Entities.PROJECT_NAME] || "");
+            if (towerName) msg += ` in tower ${towerName}`;
+            else if (projectName) msg += ` in project ${projectName}`;
+            return { error: true, message: msg + ". Please provide more specific details or check the unit number." };
+        }
+        if (unitOrUnits.requiresProjectOrTowerContext) {
+            return { error: true, message: `To find unit "${unitOrUnits.unitNumber}", please specify which project and/or tower it belongs to.` };
+        }
+        if (Array.isArray(unitOrUnits)) {
+            const unitOptions = unitOrUnits.map(u => `Unit ${u.number} in Tower ${u.towerId?.name || 'N/A'}, Project ${u.projectId?.name || 'N/A'} (ID: ${u._id})`).join('\n - ');
+            return { error: true, message: `I found multiple units matching "${entities[Entities.UNIT_NUMBER]}":\n - ${unitOptions}\nPlease specify by ID or be more specific with project/tower.`, data: unitOrUnits };
+        }
+        return { error: false, unit: unitOrUnits };
+    }
+
+
     async handleListProjects(entities, userId, tenantId, role, conversationContext) {
+        // This handler is relatively simple and doesn't need much change from Sprint 2.6
+        // unless we want to add more sophisticated filtering based on entities.
         try {
             const filters = { city: entities[Entities.LOCATION], active: true };
             const pagination = { page: 1, limit: 10 };
@@ -127,72 +209,70 @@ class InventoryHandler {
 
     async handleGetProjectDetails(entities, userId, tenantId, role, conversationContext) {
         try {
-            const project = await this._findProject(entities, tenantId, conversationContext, true);
-            if (!project) {
-                return { success: false, message: `I couldn't find the project "${entities[Entities.PROJECT_NAME] || conversationContext.activeProjectName || 'specified'}". Please try a different name or ID.`, data: null, conversationContextUpdate: {} };
-            }
-            if (Array.isArray(project)) {
-                const projectOptions = project.map(p => `${p.name} (ID: ${p._id}) in ${p.city}`).join('\n - ');
-                return { success: false, message: `I found multiple projects matching "${entities[Entities.PROJECT_NAME]}":\n - ${projectOptions}\nPlease specify by ID or provide more details.`, data: project, conversationContextUpdate: {} };
-            }
+            const resolution = await this._resolveProject(entities, tenantId, conversationContext);
+            if (resolution.error) return { ...resolution, success: false, conversationContextUpdate: {} };
+            const project = resolution.project;
 
-            const unitStats = project.unitStats || { total: 0, available: 0, booked: 0, sold: 0 };
-            const towerCount = project.towers ? project.towers.length : (await towerService.getTowers(project._id.toString(), {}, { page: 1, limit: 0 })).pagination.total;
+            const detailedProject = await projectService.getProjectById(project._id.toString()); // Re-fetch to ensure all stats are populated
 
-            let message = `Project: ${project.name} (ID: ${project._id})\nLocation: ${project.address}, ${project.city}\nStatus: ${project.active ? 'Active' : 'Inactive'}\nDescription: ${project.description || 'N/A'}\n`;
+            const unitStats = detailedProject.unitStats || { total: 0, available: 0, booked: 0, sold: 0 };
+            const towerCount = detailedProject.towerCount !== undefined ? detailedProject.towerCount : (await towerService.getTowers(detailedProject._id.toString(), {}, { page: 1, limit: 0 })).pagination.total;
+
+            let message = `Project: ${detailedProject.name} (ID: ${detailedProject._id})\nLocation: ${detailedProject.address}, ${detailedProject.city}\nStatus: ${detailedProject.active ? 'Active' : 'Inactive'}\nDescription: ${detailedProject.description || 'N/A'}\n`;
             message += `Towers: ${towerCount}\nTotal Units: ${unitStats.total}, Available: ${unitStats.available}, Booked: ${unitStats.booked}, Sold: ${unitStats.sold}\n`;
-            if (project.amenities && project.amenities.length > 0) message += `Amenities: ${project.amenities.join(', ')}\n`;
-            message += `What else about ${project.name}? (e.g., 'list its towers', 'show available units')`;
+            if (detailedProject.amenities && detailedProject.amenities.length > 0) message += `Amenities: ${detailedProject.amenities.join(', ')}\n`;
+            message += `What else about ${detailedProject.name}? (e.g., 'list its towers', 'show available units')`;
 
             return {
                 success: true,
                 message: message,
-                data: project,
-                conversationContextUpdate: { activeProjectId: project._id.toString(), activeProjectName: project.name, activeTowerId: null, activeTowerName: null, activeUnitId: null, activeUnitNumber: null }
+                data: detailedProject,
+                conversationContextUpdate: { activeProjectId: detailedProject._id.toString(), activeProjectName: detailedProject.name, activeTowerId: null, activeTowerName: null, activeUnitId: null, activeUnitNumber: null }
             };
         } catch (error) {
             logger.error('[InventoryHandler.handleGetProjectDetails] Error:', error);
-            return this._handleError(error, `getting details for project "${entities[Entities.PROJECT_NAME] || ''}"`);
+            return this._handleError(error, `getting details for project`);
         }
     }
 
     async handleGetTowerDetails(entities, userId, tenantId, role, conversationContext) {
         try {
-            const project = await this._findProject(entities, tenantId, conversationContext);
-            const tower = await this._findTower(entities, tenantId, project, conversationContext, true);
-
-            if (!tower) {
-                let msg = `I couldn't find tower "${entities[Entities.TOWER_NAME] || conversationContext.activeTowerName || 'specified'}"`;
-                if (project && !Array.isArray(project)) msg += ` in project ${project.name}`;
-                else if (conversationContext.activeProjectName && !project) msg += ` in project ${conversationContext.activeProjectName}`;
-                msg += `. Please try a different name or ID.`;
-                return { success: false, message: msg, data: null, conversationContextUpdate: {} };
-            }
-            if (Array.isArray(tower)) {
-                const towerOptions = tower.map(t => `${t.name} (ID: ${t._id})`).join('\n - ');
-                return { success: false, message: `I found multiple towers matching "${entities[Entities.TOWER_NAME]}". Which one?\n - ${towerOptions}\nPlease specify by ID.`, data: tower, conversationContextUpdate: {} };
+            const projectResolution = await this._resolveProject(entities, tenantId, conversationContext);
+            // If project is ambiguous or not found, and TOWER_NAME was given, we might not be able to proceed
+            // unless TOWER_ID was given.
+            let projectContextId = projectResolution.project?._id?.toString();
+            if (projectResolution.error && !entities[Entities.TOWER_ID]) { // If project error and no tower ID, then we can't find tower by name
+                if (entities[Entities.TOWER_NAME] && !entities[Entities.PROJECT_NAME] && !conversationContext.activeProjectId) {
+                    // If only tower name is given, and no project context, it's hard to find.
+                    return { success: false, message: `To get details for tower "${entities[Entities.TOWER_NAME]}", please also specify the project it belongs to, or ask about the project first.`, conversationContextUpdate: {} };
+                }
+                // If project was specified by name and ambiguous, return that error
+                if (entities[Entities.PROJECT_NAME] && projectResolution.data) return { ...projectResolution, success: false, conversationContextUpdate: {} };
             }
 
-            // Ensure projectId is populated for the message
-            const towerProject = tower.projectId || (project && !Array.isArray(project) ? project : await projectService.getProjectById(tower.projectId));
 
+            const towerResolution = await this._resolveTower(entities, tenantId, projectContextId, conversationContext);
+            if (towerResolution.error) return { ...towerResolution, success: false, conversationContextUpdate: {} };
+            const tower = towerResolution.tower;
 
-            const unitStats = tower.unitStats || { total: 0, available: 0 };
-            let message = `Tower: ${tower.name} (ID: ${tower._id}) in Project: ${towerProject.name}\n`;
-            message += `Total Floors: ${tower.totalFloors}\nConstruction: ${tower.construction?.status || 'N/A'} (${tower.construction?.completionPercentage || 0}% complete)\n`;
+            const detailedTower = await towerService.getTowerById(tower._id.toString()); // Re-fetch for full population
+
+            const unitStats = detailedTower.unitStats || { total: 0, available: 0 };
+            let message = `Tower: ${detailedTower.name} (ID: ${detailedTower._id}) in Project: ${detailedTower.projectId.name}\n`;
+            message += `Total Floors: ${detailedTower.totalFloors}\nConstruction: ${detailedTower.construction?.status || 'N/A'} (${detailedTower.construction?.completionPercentage || 0}% complete)\n`;
             message += `Total Units: ${unitStats.total}, Available: ${unitStats.available}\n`;
-            if (tower.premiums?.floorRise?.value) message += `Floor Rise: ${tower.premiums.floorRise.type} @ ${this._formatCurrency(tower.premiums.floorRise.value)} from floor ${tower.premiums.floorRise.floorStart}\n`;
-            message += `What next for tower ${tower.name}? (e.g., 'show its available units')`;
+            if (detailedTower.premiums?.floorRise?.value) message += `Floor Rise: ${detailedTower.premiums.floorRise.type} @ ${this._formatCurrency(detailedTower.premiums.floorRise.value)} from floor ${detailedTower.premiums.floorRise.floorStart}\n`;
+            message += `What next for tower ${detailedTower.name}? (e.g., 'show its available units')`;
 
             return {
                 success: true,
                 message: message,
-                data: tower,
+                data: detailedTower,
                 conversationContextUpdate: {
-                    activeTowerId: tower._id.toString(),
-                    activeTowerName: tower.name,
-                    activeProjectId: towerProject._id.toString(),
-                    activeProjectName: towerProject.name,
+                    activeTowerId: detailedTower._id.toString(),
+                    activeTowerName: detailedTower.name,
+                    activeProjectId: detailedTower.projectId._id.toString(),
+                    activeProjectName: detailedTower.projectId.name,
                     activeUnitId: null, activeUnitNumber: null
                 }
             };
@@ -209,20 +289,16 @@ class InventoryHandler {
             if (entities[Entities.MIN_PRICE]) filters.minPrice = parseFloat(entities[Entities.MIN_PRICE]);
             if (entities[Entities.MAX_PRICE]) filters.maxPrice = parseFloat(entities[Entities.MAX_PRICE]);
 
-            const project = await this._findProject(entities, tenantId, conversationContext);
-            if (entities[Entities.PROJECT_NAME] && !project) {
-                return { success: false, message: `I couldn't find project "${entities[Entities.PROJECT_NAME]}".`, data: null, conversationContextUpdate: {} };
-            }
-            if (project && !Array.isArray(project)) filters.projectId = project._id.toString();
+            const projectResolution = await this._resolveProject(entities, tenantId, conversationContext);
+            let projectContextId = projectResolution.project?._id?.toString();
+            if (projectResolution.error && entities[Entities.PROJECT_NAME]) return { ...projectResolution, success: false, conversationContextUpdate: {} }; // If project was named and ambiguous/not found
+            if (projectContextId) filters.projectId = projectContextId;
 
+            const towerResolution = await this._resolveTower(entities, tenantId, projectContextId, conversationContext);
+            let towerContextId = towerResolution.tower?._id?.toString();
+            if (towerResolution.error && entities[Entities.TOWER_NAME]) return { ...towerResolution, success: false, conversationContextUpdate: {} }; // If tower was named and ambiguous/not found
+            if (towerContextId) filters.towerId = towerContextId;
 
-            const tower = await this._findTower(entities, tenantId, project, conversationContext);
-            if (entities[Entities.TOWER_NAME] && !tower) {
-                let msg = `I couldn't find tower "${entities[Entities.TOWER_NAME]}"`;
-                if (project && !Array.isArray(project)) msg += ` in project ${project.name}`;
-                return { success: false, message: msg, data: null, conversationContextUpdate: {} };
-            }
-            if (tower && !Array.isArray(tower)) filters.towerId = tower._id.toString();
 
             const pagination = { page: 1, limit: 5 };
             const unitsResult = await unitService.getUnits(filters, pagination);
@@ -230,9 +306,16 @@ class InventoryHandler {
             if (!unitsResult || unitsResult.data.length === 0) {
                 let message = "I couldn't find any available units matching your criteria";
                 if (filters.type) message += ` of type ${filters.type}`;
-                if (project && !Array.isArray(project)) message += ` in project ${project.name}`;
-                if (tower && !Array.isArray(tower)) message += ` in tower ${tower.name}`;
-                return { success: true, message: `${message}.`, data: null, conversationContextUpdate: {} };
+                if (projectResolution.project) message += ` in project ${projectResolution.project.name}`;
+                if (towerResolution.tower) message += ` in tower ${towerResolution.tower.name}`;
+                return {
+                    success: true, message: `${message}.`, data: null, conversationContextUpdate: {
+                        activeProjectId: projectResolution.project?._id?.toString(),
+                        activeProjectName: projectResolution.project?.name,
+                        activeTowerId: towerResolution.tower?._id?.toString(),
+                        activeTowerName: towerResolution.tower?.name,
+                    }
+                };
             }
 
             const unitDescriptions = unitsResult.data.map(u =>
@@ -248,10 +331,10 @@ class InventoryHandler {
                 message: responseMessage,
                 data: unitsResult.data,
                 conversationContextUpdate: {
-                    activeProjectId: project?._id?.toString(),
-                    activeProjectName: project?.name,
-                    activeTowerId: tower?._id?.toString(),
-                    activeTowerName: tower?.name,
+                    activeProjectId: projectResolution.project?._id?.toString(),
+                    activeProjectName: projectResolution.project?.name,
+                    activeTowerId: towerResolution.tower?._id?.toString(),
+                    activeTowerName: towerResolution.tower?.name,
                 }
             };
         } catch (error) {
@@ -262,63 +345,67 @@ class InventoryHandler {
 
     async handleGetUnitDetails(entities, userId, tenantId, role, conversationContext) {
         try {
-            const project = await this._findProject(entities, tenantId, conversationContext);
-            const tower = await this._findTower(entities, tenantId, project, conversationContext);
-            const unit = await this._findUnit(entities, tenantId, project, tower, conversationContext, true);
+            const projectResolution = await this._resolveProject(entities, tenantId, conversationContext);
+            let projectContextId = projectResolution.project?._id?.toString();
+            if (projectResolution.error && entities[Entities.PROJECT_NAME]) return { ...projectResolution, success: false, conversationContextUpdate: {} };
 
-            if (!unit) {
-                let msg = `I couldn't find unit "${entities[Entities.UNIT_NUMBER] || 'specified'}"`;
-                if (tower && !Array.isArray(tower)) msg += ` in tower ${tower.name}`;
-                else if (project && !Array.isArray(project)) msg += ` in project ${project.name}`;
-                msg += `. Please provide more specific details or check the unit number.`;
-                return { success: false, message: msg, data: null, conversationContextUpdate: {} };
-            }
-            if (Array.isArray(unit)) {
-                const unitOptions = unit.map(u => `Unit ${u.number} in Tower ${u.towerId?.name || 'N/A'}, Project ${u.projectId?.name || 'N/A'} (ID: ${u._id})`).join('\n - ');
-                return { success: false, message: `I found multiple units matching "${entities[Entities.UNIT_NUMBER]}":\n - ${unitOptions}\nPlease specify by ID or be more specific with project/tower.`, data: unit, conversationContextUpdate: {} };
-            }
+            const towerResolution = await this._resolveTower(entities, tenantId, projectContextId, conversationContext);
+            let towerContextId = towerResolution.tower?._id?.toString();
+            if (towerResolution.error && entities[Entities.TOWER_NAME]) return { ...towerResolution, success: false, conversationContextUpdate: {} };
 
-            const priceDetails = unit.priceDetails || await unitService.calculateUnitPrice(unit._id.toString());
+            const unitResolution = await this._resolveUnit(entities, tenantId, projectContextId, towerContextId, conversationContext);
+            if (unitResolution.error) return { ...unitResolution, success: false, conversationContextUpdate: {} };
+            const unit = unitResolution.unit;
 
-            let message = `Details for Unit ${unit.number} in Tower ${unit.towerId.name}, Project ${unit.projectId.name}:\n`;
-            message += `- Type: ${unit.type}, Floor: ${unit.floor}\n`;
-            message += `- Carpet Area: ${unit.carpetArea} sqft, Super Built-up: ${unit.superBuiltUpArea} sqft\n`;
-            message += `- Status: ${unit.status}\n`;
-            message += `- Base Price (Unit): ${this._formatCurrency(unit.basePrice)}\n`;
+            const detailedUnit = await unitService.getUnitById(unit._id.toString()); // Re-fetch for full population
+
+            const priceDetails = detailedUnit.priceDetails || await unitService.calculateUnitPrice(detailedUnit._id.toString());
+
+            let message = `Details for Unit ${detailedUnit.number} in Tower ${detailedUnit.towerId.name}, Project ${detailedUnit.projectId.name}:\n`;
+            message += `- Type: ${detailedUnit.type}, Floor: ${detailedUnit.floor}\n`;
+            message += `- Carpet Area: ${detailedUnit.carpetArea} sqft, Super Built-up: ${detailedUnit.superBuiltUpArea} sqft\n`;
+            message += `- Status: ${detailedUnit.status}\n`;
+            message += `- Base Price (Unit): ${this._formatCurrency(detailedUnit.basePrice)}\n`;
             message += `- Calculated Total Price: ${this._formatCurrency(priceDetails.totalPrice)} (incl. premiums, taxes)\n`;
-            if (unit.views && unit.views.length > 0) message += `- Views: ${unit.views.join(', ')}\n`;
+            if (detailedUnit.views && detailedUnit.views.length > 0) message += `- Views: ${detailedUnit.views.join(', ')}\n`;
             message += `What next? (e.g., 'calculate its full price breakdown', 'lock this unit')`;
 
             return {
                 success: true,
                 message: message,
-                data: unit,
+                data: detailedUnit,
                 conversationContextUpdate: {
-                    activeUnitId: unit._id.toString(), activeUnitNumber: unit.number,
-                    activeTowerId: unit.towerId._id.toString(), activeTowerName: unit.towerId.name,
-                    activeProjectId: unit.projectId._id.toString(), activeProjectName: unit.projectId.name
+                    activeUnitId: detailedUnit._id.toString(), activeUnitNumber: detailedUnit.number,
+                    activeTowerId: detailedUnit.towerId._id.toString(), activeTowerName: detailedUnit.towerId.name,
+                    activeProjectId: detailedUnit.projectId._id.toString(), activeProjectName: detailedUnit.projectId.name
                 }
             };
         } catch (error) {
             logger.error('[InventoryHandler.handleGetUnitDetails] Error:', error);
-            return this._handleError(error, `getting details for unit "${entities[Entities.UNIT_NUMBER] || ''}"`);
+            return this._handleError(error, `getting details for unit`);
         }
     }
 
     async handleGetUnitPrice(entities, userId, tenantId, role, conversationContext) {
         try {
-            const project = await this._findProject(entities, tenantId, conversationContext);
-            const tower = await this._findTower(entities, tenantId, project, conversationContext);
-            const unit = await this._findUnit(entities, tenantId, project, tower, conversationContext);
+            const projectResolution = await this._resolveProject(entities, tenantId, conversationContext);
+            let projectContextId = projectResolution.project?._id?.toString();
+            if (projectResolution.error && entities[Entities.PROJECT_NAME]) return { ...projectResolution, success: false, conversationContextUpdate: {} };
 
-            if (!unit || Array.isArray(unit)) { // Ensure unit is found and unambiguous
-                return { success: false, message: `I need a specific, unique unit to calculate its price. Please specify the unit number, and optionally project/tower. If multiple matches were found previously, please use the unit ID.`, data: null, conversationContextUpdate: {} };
-            }
+            const towerResolution = await this._resolveTower(entities, tenantId, projectContextId, conversationContext);
+            let towerContextId = towerResolution.tower?._id?.toString();
+            if (towerResolution.error && entities[Entities.TOWER_NAME]) return { ...towerResolution, success: false, conversationContextUpdate: {} };
+
+            const unitResolution = await this._resolveUnit(entities, tenantId, projectContextId, towerContextId, conversationContext);
+            if (unitResolution.error) return { ...unitResolution, success: false, conversationContextUpdate: {} };
+            const unit = unitResolution.unit;
 
             const priceDetails = await unitService.calculateUnitPrice(unit._id.toString());
+            const detailedUnit = await unitService.getUnitById(unit._id.toString()); // For tower/project names
 
-            let message = `Price breakdown for Unit ${unit.number} (Tower: ${unit.towerId.name}, Project: ${unit.projectId.name}):\n`;
-            message += `- Base Unit Price (Rate * Area): ${this._formatCurrency(unit.basePrice * unit.superBuiltUpArea)} (Rate: ${this._formatCurrency(unit.basePrice)}/sqft on SBA: ${unit.superBuiltUpArea} sqft)\n`;
+            let message = `Price breakdown for Unit ${detailedUnit.number} (Tower: ${detailedUnit.towerId.name}, Project: ${detailedUnit.projectId.name}):\n`;
+            // ... (rest of price breakdown message as in Sprint 2.6)
+            message += `- Base Unit Price (Rate * Area): ${this._formatCurrency(detailedUnit.basePrice * detailedUnit.superBuiltUpArea)} (Rate: ${this._formatCurrency(detailedUnit.basePrice)}/sqft on SBA: ${detailedUnit.superBuiltUpArea} sqft)\n`;
             message += `- Calculated Base Price (from pricing engine): ${this._formatCurrency(priceDetails.basePrice)}\n`;
             if (priceDetails.premiums && priceDetails.premiums.length > 0) {
                 message += `- Premiums Total: ${this._formatCurrency(priceDetails.premiumTotal)}\n`;
@@ -339,14 +426,15 @@ class InventoryHandler {
             if (priceDetails.taxes.registration) message += `  - Registration (${priceDetails.taxes.registration.rate}%): ${this._formatCurrency(priceDetails.taxes.registration.amount)}\n`;
             message += `- FINAL TOTAL PRICE: ${this._formatCurrency(priceDetails.totalPrice)}`;
 
+
             return {
                 success: true,
                 message: message,
                 data: priceDetails,
                 conversationContextUpdate: {
-                    activeUnitId: unit._id.toString(), activeUnitNumber: unit.number,
-                    activeTowerId: unit.towerId._id.toString(), activeTowerName: unit.towerId.name,
-                    activeProjectId: unit.projectId._id.toString(), activeProjectName: unit.projectId.name
+                    activeUnitId: detailedUnit._id.toString(), activeUnitNumber: detailedUnit.number,
+                    activeTowerId: detailedUnit.towerId._id.toString(), activeTowerName: detailedUnit.towerId.name,
+                    activeProjectId: detailedUnit.projectId._id.toString(), activeProjectName: detailedUnit.projectId.name
                 }
             };
         } catch (error) {
@@ -357,19 +445,15 @@ class InventoryHandler {
 
     async handleGetProjectUnitStats(entities, userId, tenantId, role, conversationContext) {
         try {
-            const project = await this._findProject(entities, tenantId, conversationContext, true);
-            if (!project) {
-                return { success: false, message: `I couldn't find project "${entities[Entities.PROJECT_NAME] || conversationContext.activeProjectName || 'specified'}".`, data: null, conversationContextUpdate: {} };
-            }
-            if (Array.isArray(project)) {
-                const projectOptions = project.map(p => `${p.name} (ID: ${p._id})`).join('\n - ');
-                return { success: false, message: `I found multiple projects matching "${entities[Entities.PROJECT_NAME]}":\n - ${projectOptions}\nPlease specify by ID.`, data: project, conversationContextUpdate: {} };
-            }
+            const resolution = await this._resolveProject(entities, tenantId, conversationContext);
+            if (resolution.error) return { ...resolution, success: false, conversationContextUpdate: {} };
+            const project = resolution.project;
 
             const detailedProject = await projectService.getProjectById(project._id.toString());
             const stats = detailedProject.unitStats || { total: 0, available: 0, booked: 0, sold: 0, types: [] };
 
             let message = `Unit Statistics for Project ${detailedProject.name}:\n`;
+            // ... (rest of message as in Sprint 2.6)
             message += `- Total Units: ${stats.total}\n`;
             message += `- Available: ${stats.available}\n`;
             message += `- Booked: ${stats.booked}\n`;
@@ -380,6 +464,7 @@ class InventoryHandler {
                     message += `  - ${typeStat.type || 'N/A'}: ${typeStat.count} units\n`;
                 });
             }
+
             return {
                 success: true,
                 message: message,
@@ -394,36 +479,33 @@ class InventoryHandler {
 
     async handleGetTowerConstructionStatus(entities, userId, tenantId, role, conversationContext) {
         try {
-            const project = await this._findProject(entities, tenantId, conversationContext);
-            const tower = await this._findTower(entities, tenantId, project, conversationContext, true);
+            const projectResolution = await this._resolveProject(entities, tenantId, conversationContext);
+            let projectContextId = projectResolution.project?._id?.toString();
+            if (projectResolution.error && entities[Entities.PROJECT_NAME] && !entities[Entities.TOWER_ID]) return { ...projectResolution, success: false, conversationContextUpdate: {} };
 
-            if (!tower) {
-                let msg = `I couldn't find tower "${entities[Entities.TOWER_NAME] || conversationContext.activeTowerName || 'specified'}"`;
-                if (project && !Array.isArray(project)) msg += ` in project ${project.name}`;
-                return { success: false, message: msg + ".", data: null, conversationContextUpdate: {} };
-            }
-            if (Array.isArray(tower)) {
-                const towerOptions = tower.map(t => `${t.name} (ID: ${t._id})`).join('\n - ');
-                return { success: false, message: `I found multiple towers matching "${entities[Entities.TOWER_NAME]}". Which one?\n - ${towerOptions}\nPlease specify by ID.`, data: tower, conversationContextUpdate: {} };
-            }
+            const towerResolution = await this._resolveTower(entities, tenantId, projectContextId, conversationContext);
+            if (towerResolution.error) return { ...towerResolution, success: false, conversationContextUpdate: {} };
+            const tower = towerResolution.tower;
 
-            const towerDetails = await towerService.getTowerById(tower._id.toString()); // Re-fetch to ensure projectId is populated
-            const construction = towerDetails.construction || { status: 'N/A', completionPercentage: 0 };
-            let message = `Construction status for Tower ${towerDetails.name} (Project: ${towerDetails.projectId.name}):\n`;
+            const detailedTower = await towerService.getTowerById(tower._id.toString());
+            const construction = detailedTower.construction || { status: 'N/A', completionPercentage: 0 };
+            let message = `Construction status for Tower ${detailedTower.name} (Project: ${detailedTower.projectId.name}):\n`;
+            // ... (rest of message as in Sprint 2.6)
             message += `- Status: ${construction.status}\n`;
             message += `- Completion: ${construction.completionPercentage}%\n`;
             if (construction.estimatedCompletionDate) {
                 message += `- Estimated Completion: ${new Date(construction.estimatedCompletionDate).toLocaleDateString()}\n`;
             }
+
             return {
                 success: true,
                 message: message,
                 data: construction,
                 conversationContextUpdate: {
-                    activeTowerId: towerDetails._id.toString(),
-                    activeTowerName: towerDetails.name,
-                    activeProjectId: towerDetails.projectId._id.toString(),
-                    activeProjectName: towerDetails.projectId.name
+                    activeTowerId: detailedTower._id.toString(),
+                    activeTowerName: detailedTower.name,
+                    activeProjectId: detailedTower.projectId._id.toString(),
+                    activeProjectName: detailedTower.projectId.name
                 }
             };
         } catch (error) {
@@ -434,43 +516,43 @@ class InventoryHandler {
 
     async handleLockUnit(entities, userId, tenantId, role, conversationContext) {
         try {
-            const durationString = entities[Entities.DURATION]; // e.g., "2 hours", "90 minutes"
-            let minutesToLock = 60; // Default lock time
-
-            if (durationString) {
+            const durationString = entities[Entities.DURATION];
+            let minutesToLock = 60;
+            if (durationString) { /* ... (parsing logic from Sprint 2.6) ... */
                 const durationParts = durationString.toLowerCase().split(" ");
                 const value = parseInt(durationParts[0]);
                 if (!isNaN(value)) {
-                    if (durationParts.includes("hour") || durationParts.includes("hours")) {
-                        minutesToLock = value * 60;
-                    } else if (durationParts.includes("minute") || durationParts.includes("minutes")) {
-                        minutesToLock = value;
-                    }
+                    if (durationParts.includes("hour") || durationParts.includes("hours")) minutesToLock = value * 60;
+                    else if (durationParts.includes("minute") || durationParts.includes("minutes")) minutesToLock = value;
                 }
             }
 
-            const project = await this._findProject(entities, tenantId, conversationContext);
-            const tower = await this._findTower(entities, tenantId, project, conversationContext);
-            const unit = await this._findUnit(entities, tenantId, project, tower, conversationContext);
+            const projectResolution = await this._resolveProject(entities, tenantId, conversationContext);
+            let projectContextId = projectResolution.project?._id?.toString();
+            if (projectResolution.error && entities[Entities.PROJECT_NAME] && !entities[Entities.UNIT_ID] && !entities[Entities.TOWER_ID]) return { ...projectResolution, success: false, conversationContextUpdate: {} };
 
-            if (!unit || Array.isArray(unit)) {
-                return { success: false, message: "Which specific unit would you like to lock? Please provide the unit number and optionally project/tower.", data: null, conversationContextUpdate: {} };
-            }
 
-            const lockedUnit = await unitService.lockUnit(unit._id.toString(), userId, minutesToLock);
+            const towerResolution = await this._resolveTower(entities, tenantId, projectContextId, conversationContext);
+            let towerContextId = towerResolution.tower?._id?.toString();
+            if (towerResolution.error && entities[Entities.TOWER_NAME] && !entities[Entities.UNIT_ID]) return { ...towerResolution, success: false, conversationContextUpdate: {} };
 
-            // Optionally, if a lead name was mentioned (e.g., "for Jane Johnson"), add a note.
-            // This requires lead identification similar to leadHandler._findLead
-            // For now, we'll skip this part to keep the lock action focused.
+            const unitResolution = await this._resolveUnit(entities, tenantId, projectContextId, towerContextId, conversationContext);
+            if (unitResolution.error) return { ...unitResolution, success: false, conversationContextUpdate: {} };
+            const unit = unitResolution.unit;
+
+            const lockedUnitDetails = await unitService.lockUnit(unit._id.toString(), userId, minutesToLock);
+            // Re-fetch to get populated project/tower names for the response
+            const finalLockedUnit = await unitService.getUnitById(lockedUnitDetails._id.toString());
+
 
             return {
                 success: true,
-                message: `Unit ${lockedUnit.number} in ${lockedUnit.towerId.name} has been locked for you for ${minutesToLock} minutes. It will be automatically released at ${new Date(lockedUnit.lockedUntil).toLocaleTimeString()}.`,
-                data: lockedUnit,
+                message: `Unit ${finalLockedUnit.number} in Tower ${finalLockedUnit.towerId.name}, Project ${finalLockedUnit.projectId.name} has been locked for you for ${minutesToLock} minutes. It will be automatically released at ${new Date(finalLockedUnit.lockedUntil).toLocaleTimeString()}.`,
+                data: finalLockedUnit,
                 conversationContextUpdate: {
-                    activeUnitId: lockedUnit._id.toString(), activeUnitNumber: lockedUnit.number,
-                    activeTowerId: lockedUnit.towerId._id.toString(), activeTowerName: lockedUnit.towerId.name,
-                    activeProjectId: lockedUnit.projectId._id.toString(), activeProjectName: lockedUnit.projectId.name
+                    activeUnitId: finalLockedUnit._id.toString(), activeUnitNumber: finalLockedUnit.number,
+                    activeTowerId: finalLockedUnit.towerId._id.toString(), activeTowerName: finalLockedUnit.towerId.name,
+                    activeProjectId: finalLockedUnit.projectId._id.toString(), activeProjectName: finalLockedUnit.projectId.name
                 }
             };
         } catch (error) {
@@ -481,30 +563,34 @@ class InventoryHandler {
 
     async handleReleaseUnit(entities, userId, tenantId, role, conversationContext) {
         try {
-            const project = await this._findProject(entities, tenantId, conversationContext);
-            const tower = await this._findTower(entities, tenantId, project, conversationContext);
-            const unit = await this._findUnit(entities, tenantId, project, tower, conversationContext);
+            const projectResolution = await this._resolveProject(entities, tenantId, conversationContext);
+            let projectContextId = projectResolution.project?._id?.toString();
+            if (projectResolution.error && entities[Entities.PROJECT_NAME] && !entities[Entities.UNIT_ID] && !entities[Entities.TOWER_ID]) return { ...projectResolution, success: false, conversationContextUpdate: {} };
 
-            if (!unit || Array.isArray(unit)) {
-                return { success: false, message: "Which specific unit would you like to release? Please provide the unit number and optionally project/tower.", data: null, conversationContextUpdate: {} };
-            }
+            const towerResolution = await this._resolveTower(entities, tenantId, projectContextId, conversationContext);
+            let towerContextId = towerResolution.tower?._id?.toString();
+            if (towerResolution.error && entities[Entities.TOWER_NAME] && !entities[Entities.UNIT_ID]) return { ...towerResolution, success: false, conversationContextUpdate: {} };
 
-            // Permission check: Only the user who locked or a manager can release
+            const unitResolution = await this._resolveUnit(entities, tenantId, projectContextId, towerContextId, conversationContext);
+            if (unitResolution.error) return { ...unitResolution, success: false, conversationContextUpdate: {} };
+            const unit = unitResolution.unit;
+
             if (unit.status === 'locked' && unit.lockedBy && unit.lockedBy.toString() !== userId && !['Principal', 'BusinessHead', 'SalesDirector'].includes(role)) {
                 return { success: false, message: `Unit ${unit.number} was locked by another user. Only they or a manager can release it.`, data: null, conversationContextUpdate: {} };
             }
 
-            const releasedUnit = await unitService.releaseUnit(unit._id.toString());
+            const releasedUnitDetails = await unitService.releaseUnit(unit._id.toString());
+            const finalReleasedUnit = await unitService.getUnitById(releasedUnitDetails._id.toString());
+
 
             return {
                 success: true,
-                message: `Unit ${releasedUnit.number} in ${releasedUnit.towerId.name} has been released and is now available.`,
-                data: releasedUnit,
+                message: `Unit ${finalReleasedUnit.number} in Tower ${finalReleasedUnit.towerId.name}, Project ${finalReleasedUnit.projectId.name} has been released and is now available.`,
+                data: finalReleasedUnit,
                 conversationContextUpdate: {
-                    // Clear active unit if it was the one released, or keep project/tower context
                     activeUnitId: null, activeUnitNumber: null,
-                    activeTowerId: releasedUnit.towerId._id.toString(), activeTowerName: releasedUnit.towerId.name,
-                    activeProjectId: releasedUnit.projectId._id.toString(), activeProjectName: releasedUnit.projectId.name
+                    activeTowerId: finalReleasedUnit.towerId._id.toString(), activeTowerName: finalReleasedUnit.towerId.name,
+                    activeProjectId: finalReleasedUnit.projectId._id.toString(), activeProjectName: finalReleasedUnit.projectId.name
                 }
             };
         } catch (error) {
@@ -521,7 +607,7 @@ class InventoryHandler {
     _handleError(error, actionDescription) {
         let message = `Sorry, I encountered an error while ${actionDescription}.`;
         if (error instanceof ApiError) {
-            message = error.message; // Use specific message from ApiError
+            message = error.message;
         }
         if (process.env.NODE_ENV === 'development' && !(error instanceof ApiError)) {
             message += ` Details: ${error.message}`;
