@@ -73,16 +73,17 @@ Prioritize identifying a specific intent over "${Intents.UNKNOWN}" if possible.
 
 Extract ALL relevant entities accurately. Do not infer or create entities that are not explicitly mentioned or clearly implied.
 If a specific value for an entity is not present, do not include the entity key in the JSON.
+A unit identifier like "A-101" should be extracted as "${Entities.UNIT_NUMBER}", not "${Entities.UNIT_ID}". "${Entities.UNIT_ID}" is reserved for MongoDB ObjectIds.
 
 Entity Extraction Examples:
 - User: "Show available 3BHK units in 'Sunrise Towers' under 2 crores"
   Entities: {"${Entities.UNIT_TYPE}": "3BHK", "${Entities.PROJECT_NAME}": "Sunrise Towers", "${Entities.MAX_PRICE}": "20000000"}
 - User: "What is the sales performance for last month?"
   Entities: {"${Entities.TIME_PERIOD}": "last month"}
-- User: "lead conversion rate for Project Alpha"
-  Entities: {"${Entities.PROJECT_NAME}": "Project Alpha"}
 - User: "update lead John Doe's priority to high"
   Entities: {"${Entities.LEAD_NAME}": "John Doe", "${Entities.LEAD_FIELD_TO_UPDATE}": "priority", "${Entities.LEAD_FIELD_VALUE}": "high"}
+- User: "Mark unit 'A-1202' in Tower A of 25 Downtown Heights Premium as interested for lead Jane Johnson with high interest. Note: she loved the master bedroom."
+  Entities: {"${Entities.UNIT_NUMBER}": "A-1202", "${Entities.TOWER_NAME}": "Tower A", "${Entities.PROJECT_NAME}": "25 Downtown Heights Premium", "${Entities.LEAD_NAME}": "Jane Johnson", "${Entities.INTEREST_LEVEL}": "high", "${Entities.NOTE_CONTENT}": "she loved the master bedroom"}
 
 Focus on the primary intent. If the user asks a question that seems out of scope for real estate management, try to map it to "HELP" or "UNKNOWN".
 Output JSON format:
@@ -100,7 +101,15 @@ Output JSON format:
         if (conversationContext?.activeProjectName) {
             contextualInfo += ` Current active project context: "${conversationContext.activeProjectName}" (ID: ${conversationContext.activeProjectId || 'unknown'}).`;
         }
-        // ... (other context injections)
+        if (conversationContext?.activeTowerName) {
+            contextualInfo += ` Current active tower context: "${conversationContext.activeTowerName}" (ID: ${conversationContext.activeTowerId || 'unknown'}).`;
+        }
+        if (conversationContext?.activeUnitNumber) {
+            contextualInfo += ` Current active unit context: "${conversationContext.activeUnitNumber}" (ID: ${conversationContext.activeUnitId || 'unknown'}).`;
+        }
+        if (conversationContext?.activeLeadName) {
+            contextualInfo += ` Current active lead context: "${conversationContext.activeLeadName}" (ID: ${conversationContext.activeLeadId || 'unknown'}).`;
+        }
         return `User input: "${text}"\n${contextualInfo}\nIdentify the intent and entities based on the system instructions. Respond with JSON.`;
     }
 

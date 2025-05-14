@@ -1,10 +1,10 @@
 // src/ai/actionHandlers/lead.handler.js
 
 const leadService = require('../../services/lead.service.js');
-const unitService = require('../../services/unit.service.js'); // For finding units for interestedUnits
-const userService = require('../../services/user.service.js'); // For resolving agent names
-const projectService = require('../../services/project.service.js'); // For resolving project names
-const towerService = require('../../services/tower.service.js'); // For resolving tower names
+const unitService = require('../../services/unit.service.js');
+const userService = require('../../services/user.service.js');
+const projectService = require('../../services/project.service.js');
+const towerService = require('../../services/tower.service.js');
 const logger = require('../../utils/logger.js');
 const Entities = require('../definitions/entities.js');
 const Intents = require('../definitions/intents.js');
@@ -43,11 +43,11 @@ class LeadHandler {
         if (leadPhoneFromEntity) {
             const searchFilters = { tenantId, phone: leadPhoneFromEntity };
             logger.debug(`[LeadHandler._findLeadAdvanced] Searching by exact phone: ${leadPhoneFromEntity}`);
-            const leadsResult = await leadService.getLeads(tenantId, searchFilters, { page: 1, limit: 2 }); // limit 2 to check for unexpected duplicates
+            const leadsResult = await leadService.getLeads(tenantId, searchFilters, { page: 1, limit: 2 });
             if (leadsResult && leadsResult.data.length === 1) return await leadService.getLeadById(leadsResult.data[0]._id);
             if (leadsResult && leadsResult.data.length > 1) {
                 logger.warn(`[LeadHandler._findLeadAdvanced] Ambiguous result for phone search (should be unique): ${leadPhoneFromEntity}. Found ${leadsResult.data.length} leads.`);
-                return leadsResult.data; // Data issue or service layer not filtering strictly
+                return leadsResult.data;
             }
         }
 
@@ -97,10 +97,8 @@ class LeadHandler {
 
         const lead = leadOrLeads;
 
-        // Permission Check for actions (viewing permissions might be different and handled in specific handlers)
         if (['JuniorAgent', 'SeniorAgent'].includes(role) && (!lead.assignedTo || lead.assignedTo._id.toString() !== userId)) {
-            // Allow viewing if not assigned, but block actions
-            if (conversationContext?.lastNLUOutput?.intent !== Intents.GET_LEAD_DETAILS && conversationContext?.lastNLUOutput?.intent !== Intents.LIST_MY_LEADS) { // Check if it's an action intent
+            if (conversationContext?.lastNLUOutput?.intent !== Intents.GET_LEAD_DETAILS && conversationContext?.lastNLUOutput?.intent !== Intents.LIST_MY_LEADS) {
                 return { error: true, message: `You do not have permission to perform actions on lead ${lead.fullName} as it is not assigned to you.`, data: null, conversationContextUpdate: {} };
             }
         }
@@ -112,10 +110,6 @@ class LeadHandler {
             const resolution = await this._resolveLeadForAction(entities, userId, tenantId, role, conversationContext);
             if (resolution.error) return { ...resolution, success: false };
             const lead = resolution.lead;
-
-            // Specific permission for viewing (agents can view unassigned leads if explicitly searched for, but not act on them without assignment)
-            // This is a subtle point; for now, _resolveLeadForAction's permission is for *actions*.
-            // If stricter view control is needed, add it here.
 
             let message = `Details for Lead: ${lead.fullName} (ID: ${lead._id})\n`;
             message += `- Status: ${lead.status}\n`;
@@ -365,7 +359,7 @@ class LeadHandler {
                     readableFieldName = "requirements";
                     break;
                 case 'budget':
-                    const minBudgetStr = entities[Entities.BUDGET_MIN] || (fieldValue?.min); // Allow direct object too
+                    const minBudgetStr = entities[Entities.BUDGET_MIN] || (fieldValue?.min);
                     const maxBudgetStr = entities[Entities.BUDGET_MAX] || (fieldValue?.max);
                     const currency = entities[Entities.BUDGET_CURRENCY] || fieldValue?.currency || lead.budget?.currency || 'INR';
 
@@ -422,18 +416,31 @@ class LeadHandler {
             if (resolution.error) return { ...resolution, success: false };
             const lead = resolution.lead;
 
-            const projectForUnit = await this._findProjectForUnit(entities, tenantId, conversationContext);
-            const towerForUnit = await this._findTowerForUnit(entities, tenantId, projectForUnit, conversationContext);
-            const unitToAdd = await this._findUnitForInterest(entities, tenantId, projectForUnit, towerForUnit, conversationContext);
-
-            if (!unitToAdd || Array.isArray(unitToAdd)) { // Ensure unit is uniquely identified
-                return { success: false, message: `Could not uniquely identify unit "${entities[Entities.UNIT_NUMBER] || 'specified'}". Please specify project or tower if needed, or use the unit ID.`, data: null, conversationContextUpdate: {} };
-            }
-
+            // **FIX: Use Entities.UNIT_NUMBER for unitNumber**
+            const unitNumber = entities[Entities.UNIT_NUMBER];
             const interestLevel = (entities[Entities.INTEREST_LEVEL] || 'medium').toLowerCase();
             const notes = entities[Entities.NOTE_CONTENT];
+
+            if (!unitNumber) {
+                return { success: false, message: "Which unit number are they interested in?", data: null, conversationContextUpdate: {} };
+            }
             if (!['low', 'medium', 'high'].includes(interestLevel)) {
                 return { success: false, message: `Invalid interest level "${entities[Entities.INTEREST_LEVEL]}". Please use low, medium, or high.`, data: null, conversationContextUpdate: {} };
+            }
+
+            const projectForUnit = await this._findProjectForUnit(entities, tenantId, conversationContext);
+            const towerForUnit = await this._findTowerForUnit(entities, tenantId, projectForUnit, conversationContext);
+
+            // Pass unitNumber string to _findUnitForInterest
+            const unitToAdd = await this._findUnitForInterest(unitNumber, tenantId, projectForUnit, towerForUnit, conversationContext);
+
+            if (!unitToAdd || Array.isArray(unitToAdd)) {
+                let unitIdentifier = unitNumber || "the specified unit";
+                let contextMessage = "";
+                if (towerForUnit && !Array.isArray(towerForUnit)) contextMessage += ` in tower ${towerForUnit.name}`;
+                else if (projectForUnit && !Array.isArray(projectForUnit)) contextMessage += ` in project ${projectForUnit.name}`;
+
+                return { success: false, message: `Could not uniquely identify unit "${unitIdentifier}"${contextMessage}. Please specify project or tower if needed, or use the unit ID.`, data: null, conversationContextUpdate: {} };
             }
 
             const interestData = {
@@ -443,18 +450,18 @@ class LeadHandler {
             };
             const updatedLead = await leadService.addInterestedUnit(lead._id.toString(), interestData);
 
-            // Get populated unit details for the message
             const populatedUnit = await unitService.getUnitById(unitToAdd._id.toString());
 
             return {
                 success: true,
-                message: `Marked unit ${populatedUnit.number} (Project: ${populatedUnit.projectId.name}) as an interested unit for lead ${updatedLead.fullName}.`,
+                message: `Marked unit ${populatedUnit.number} (Project: ${populatedUnit.projectId.name}, Tower: ${populatedUnit.towerId.name}) as an interested unit for lead ${updatedLead.fullName}.`,
                 data: updatedLead,
                 conversationContextUpdate: { activeLeadId: updatedLead._id.toString(), activeLeadName: updatedLead.fullName }
             };
+
         } catch (error) {
             logger.error('[LeadHandler.handleAddInterestedUnitToLead] Error:', error);
-            return this._handleError(error, "adding interested unit");
+            return this._handleError(error, "adding interested unit to lead");
         }
     }
 
@@ -470,12 +477,9 @@ class LeadHandler {
             }
 
             const leadResolution = await this._resolveLeadForAction(entities, userId, tenantId, role, conversationContext);
-            // For assign, the "action permission" is on the assigner (manager), not necessarily on the lead's current assignment state.
-            // So, we might not need the agent-specific permission block from _resolveLeadForAction here.
-            // However, we still need to uniquely identify the lead.
-            if (leadResolution.error && leadResolution.data) { // Ambiguous lead
+            if (leadResolution.error && leadResolution.data) {
                 return { ...leadResolution, success: false };
-            } else if (leadResolution.error) { // Lead not found
+            } else if (leadResolution.error) {
                 return { ...leadResolution, success: false };
             }
             const lead = leadResolution.lead;
@@ -514,7 +518,6 @@ class LeadHandler {
     }
 
     async _findProjectByName(projectName, tenantId) {
-        // projectService.getProjects should ideally support a direct name filter or a more precise search than generic $text
         const projectsResult = await projectService.getProjects(tenantId, { search: projectName, active: true }, { page: 1, limit: 1 });
         return (projectsResult && projectsResult.data.length > 0) ? projectsResult.data[0] : null;
     }
@@ -522,8 +525,7 @@ class LeadHandler {
     async _findTowerByName(towerName, projectId, tenantId) {
         const pId = typeof projectId === 'string' ? projectId : projectId?.toString();
         if (!pId) return null;
-        // towerService.getTowers should ideally support a direct name filter
-        const towersResult = await towerService.getTowers(pId, { name: { $regex: new RegExp(this._escapeRegex(towerName), 'i') }, active: true }, { page: 1, limit: 1 });
+        const towersResult = await towerService.getTowers(pId, { name: towerName, active: true }, { page: 1, limit: 1 });
         return (towersResult && towersResult.data.length > 0) ? towersResult.data[0] : null;
     }
 
@@ -546,15 +548,14 @@ class LeadHandler {
         }
         if (conversationContext?.activeTowerId && mongoose.Types.ObjectId.isValid(conversationContext.activeTowerId)) {
             const towerInContext = await towerService.getTowerById(conversationContext.activeTowerId);
-            if (towerInContext && (!projectId || towerInContext.projectId.toString() === projectId)) {
+            if (towerInContext && (!projectId || (towerInContext.projectId && towerInContext.projectId._id && towerInContext.projectId._id.toString() === projectId))) {
                 return towerInContext;
             }
         }
         return null;
     }
 
-    async _findUnitForInterest(entities, tenantId, projectContext, towerContext, conversationContext) {
-        const unitNumber = entities[Entities.UNIT_NUMBER];
+    async _findUnitForInterest(unitNumber, tenantId, projectContext, towerContext, conversationContext) {
         if (!unitNumber) return null;
 
         const filters = { tenantId, number: unitNumber };
@@ -563,9 +564,12 @@ class LeadHandler {
         else if (conversationContext?.activeTowerId) filters.towerId = conversationContext.activeTowerId;
         else if (conversationContext?.activeProjectId) filters.projectId = conversationContext.activeProjectId;
 
-        const unitsResult = await unitService.getUnits(filters, { page: 1, limit: 1 });
+        const unitsResult = await unitService.getUnits(filters, { page: 1, limit: 2 }); // limit 2 to check ambiguity
         if (unitsResult && unitsResult.data.length === 1) {
             return await unitService.getUnitById(unitsResult.data[0]._id);
+        }
+        if (unitsResult && unitsResult.data.length > 1) { // Added to return array for disambiguation
+            return unitsResult.data;
         }
         return null;
     }
@@ -580,7 +584,6 @@ class LeadHandler {
         if (error instanceof ApiError) {
             message = error.message;
         }
-        // For development, include more details. For production, keep it generic.
         if (process.env.NODE_ENV === 'development' && !(error instanceof ApiError)) {
             message += ` Details: ${error.message}`;
         }
