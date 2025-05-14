@@ -6,6 +6,7 @@ const Intents = require('../ai/definitions/intents.js');
 const basicHandler = require('../ai/actionHandlers/basic.handler.js');
 const inventoryHandler = require('../ai/actionHandlers/inventory.handler.js');
 const leadHandler = require('../ai/actionHandlers/lead.handler.js');
+const analyticsHandler = require('../ai/actionHandlers/analytics.handler.js'); // Added
 
 class ConversationalAIService {
     constructor() {
@@ -36,6 +37,10 @@ class ConversationalAIService {
             [Intents.UPDATE_LEAD_FIELD]: leadHandler.handleUpdateLeadField.bind(leadHandler),
             [Intents.ADD_INTERESTED_UNIT_TO_LEAD]: leadHandler.handleAddInterestedUnitToLead.bind(leadHandler),
             [Intents.ASSIGN_LEAD_TO_AGENT]: leadHandler.handleAssignLeadToAgent.bind(leadHandler),
+
+            // Analytics Intents
+            [Intents.GET_SALES_PERFORMANCE_SUMMARY]: analyticsHandler.handleGetSalesPerformanceSummary.bind(analyticsHandler),
+            [Intents.GET_LEAD_CONVERSION_RATE]: analyticsHandler.handleGetLeadConversionRate.bind(analyticsHandler),
         };
     }
 
@@ -119,7 +124,6 @@ class ConversationalAIService {
         if (newContext.endConversation) {
             return { conversationEnded: true };
         }
-        // Only keep relevant context for a few turns or based on active entities
         const CONTEXT_KEYS_TO_KEEP = ['activeProjectId', 'activeProjectName', 'activeTowerId', 'activeTowerName', 'activeUnitId', 'activeUnitNumber', 'activeLeadId', 'activeLeadName', 'lastNLUOutput', 'lastUserMessage'];
         const prunedContext = {};
         CONTEXT_KEYS_TO_KEEP.forEach(key => {
@@ -127,9 +131,7 @@ class ConversationalAIService {
                 prunedContext[key] = newContext[key];
             }
         });
-        // If conversation ended, just return that signal
         if (newContext.conversationEnded) return { conversationEnded: true };
-
         return prunedContext;
     }
 }

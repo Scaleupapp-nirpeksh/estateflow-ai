@@ -10,23 +10,22 @@ const mongoose = require('mongoose');
 
 class InventoryHandler {
 
-    _escapeRegex(string) {
-        if (typeof string !== 'string') return '';
-        return string.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
-    }
+    // _escapeRegex is not needed here anymore as services handle their regex
+    // _escapeRegex(string) {
+    //     if (typeof string !== 'string') return '';
+    //     return string.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+    // }
 
     async _findProjectAdvanced(entities, tenantId, conversationContext) {
-        const projectIdFromEntity = entities[Entities.PROJECT_ID]; // NLU might extract PROJECT_ID directly
+        const projectIdFromEntity = entities[Entities.PROJECT_ID];
         const projectNameFromEntity = entities[Entities.PROJECT_NAME];
 
-        // Priority 1: Explicit ID from current utterance
         if (projectIdFromEntity && mongoose.Types.ObjectId.isValid(projectIdFromEntity)) {
             logger.debug(`[InventoryHandler._findProjectAdvanced] Attempting find by explicit ID: ${projectIdFromEntity}`);
             const project = await projectService.getProjectById(projectIdFromEntity);
             if (project && project.tenantId.toString() === tenantId) return project;
         }
 
-        // Priority 2: Active project from context IF no new project identifier is present in the current utterance
         const noNewProjectIdentifier = !projectIdFromEntity && !projectNameFromEntity;
         if (noNewProjectIdentifier && conversationContext?.activeProjectId && mongoose.Types.ObjectId.isValid(conversationContext.activeProjectId)) {
             logger.debug(`[InventoryHandler._findProjectAdvanced] Using activeProjectId from context: ${conversationContext.activeProjectId}`);
@@ -34,16 +33,15 @@ class InventoryHandler {
             if (project && project.tenantId.toString() === tenantId) return project;
         }
 
-        // Priority 3: Search by name
         if (projectNameFromEntity) {
             logger.debug(`[InventoryHandler._findProjectAdvanced] Searching by name: ${projectNameFromEntity}`);
-            // Use the 'search' filter which leverages the text index on Project model (name, description, address)
-            const projectsResult = await projectService.getProjects(tenantId, { search: projectNameFromEntity, active: undefined }, { page: 1, limit: 5 }); // active: undefined to search all
+            // Pass the name directly for the service's $text search
+            const projectsResult = await projectService.getProjects(tenantId, { search: projectNameFromEntity, active: undefined }, { page: 1, limit: 5 });
             if (projectsResult && projectsResult.data.length === 1) {
-                return await projectService.getProjectById(projectsResult.data[0]._id); // Fetch full details
+                return await projectService.getProjectById(projectsResult.data[0]._id);
             }
             if (projectsResult && projectsResult.data.length > 1) {
-                return projectsResult.data; // Ambiguous: return array for disambiguation
+                return projectsResult.data;
             }
         }
         logger.debug(`[InventoryHandler._findProjectAdvanced] No project found.`);
@@ -56,49 +54,46 @@ class InventoryHandler {
 
         let effectiveProjectId = projectContextId || conversationContext?.activeProjectId;
 
-        // Priority 1: Explicit Tower ID
         if (towerIdFromEntity && mongoose.Types.ObjectId.isValid(towerIdFromEntity)) {
             logger.debug(`[InventoryHandler._findTowerAdvanced] Attempting find by explicit Tower ID: ${towerIdFromEntity}`);
             const tower = await towerService.getTowerById(towerIdFromEntity);
-            // Validate tenant and project context if available
-            if (tower && tower.tenantId.toString() === tenantId) {
-                if (!effectiveProjectId || tower.projectId.toString() === effectiveProjectId) {
+            if (tower && tower.tenantId.toString() === tenantId) { // Assuming tower has tenantId directly or via project
+                // Ensure tower belongs to the correct project if project context is strong
+                if (!effectiveProjectId || (tower.projectId && tower.projectId._id && tower.projectId._id.toString() === effectiveProjectId)) {
                     return tower;
                 }
                 logger.warn(`[InventoryHandler._findTowerAdvanced] Tower ID ${towerIdFromEntity} found, but not in current project context ${effectiveProjectId}.`);
             }
         }
 
-        // Priority 2: Active tower from context IF no new tower identifier and project context matches
         const noNewTowerIdentifier = !towerIdFromEntity && !towerNameFromEntity;
         if (noNewTowerIdentifier && conversationContext?.activeTowerId && mongoose.Types.ObjectId.isValid(conversationContext.activeTowerId)) {
             const towerInContext = await towerService.getTowerById(conversationContext.activeTowerId);
             if (towerInContext && towerInContext.tenantId.toString() === tenantId) {
-                // If there's an effective project context, ensure the tower from context belongs to it
-                if (!effectiveProjectId || towerInContext.projectId.toString() === effectiveProjectId) {
+                if (!effectiveProjectId || (towerInContext.projectId && towerInContext.projectId._id && towerInContext.projectId._id.toString() === effectiveProjectId)) {
                     logger.debug(`[InventoryHandler._findTowerAdvanced] Using activeTowerId from context: ${conversationContext.activeTowerId}`);
                     return towerInContext;
                 }
             }
         }
 
-        // Priority 3: Search by Tower Name (REQUIRES project context)
         if (towerNameFromEntity) {
             if (!effectiveProjectId) {
                 logger.debug(`[InventoryHandler._findTowerAdvanced] Tower name "${towerNameFromEntity}" provided without project context.`);
-                return { requiresProjectContext: true, forTowerName: towerNameFromEntity }; // Signal that project context is needed
+                return { requiresProjectContext: true, forTowerName: towerNameFromEntity };
             }
             logger.debug(`[InventoryHandler._findTowerAdvanced] Searching for tower "${towerNameFromEntity}" in project ID "${effectiveProjectId}"`);
+            // Pass the name string directly; towerService.getTowers will create the anchored regex
             const towersResult = await towerService.getTowers(
                 effectiveProjectId,
-                { name: { $regex: new RegExp(this._escapeRegex(towerNameFromEntity), 'i') }, active: undefined },
+                { name: towerNameFromEntity, active: undefined },
                 { page: 1, limit: 5 }
             );
             if (towersResult && towersResult.data.length === 1) {
-                return await towerService.getTowerById(towersResult.data[0]._id); // Fetch full details
+                return await towerService.getTowerById(towersResult.data[0]._id);
             }
             if (towersResult && towersResult.data.length > 1) {
-                return towersResult.data; // Ambiguous
+                return towersResult.data;
             }
         }
         logger.debug(`[InventoryHandler._findTowerAdvanced] No tower found.`);
@@ -109,28 +104,24 @@ class InventoryHandler {
         const unitIdFromEntity = entities[Entities.UNIT_ID];
         const unitNumberFromEntity = entities[Entities.UNIT_NUMBER];
 
-        // Priority 1: Explicit Unit ID
         if (unitIdFromEntity && mongoose.Types.ObjectId.isValid(unitIdFromEntity)) {
             logger.debug(`[InventoryHandler._findUnitAdvanced] Attempting find by explicit Unit ID: ${unitIdFromEntity}`);
             const unit = await unitService.getUnitById(unitIdFromEntity);
             if (unit && unit.tenantId.toString() === tenantId) {
-                // Optional: Validate against project/tower context if provided
-                if (towerContextId && unit.towerId.toString() !== towerContextId) return null;
-                if (projectContextId && unit.projectId.toString() !== projectContextId) return null;
+                if (towerContextId && unit.towerId._id.toString() !== towerContextId) return null;
+                if (projectContextId && unit.projectId._id.toString() !== projectContextId) return null;
                 return unit;
             }
         }
 
-        // Priority 2: Active unit from context IF no new unit identifier and project/tower context matches
         const noNewUnitIdentifier = !unitIdFromEntity && !unitNumberFromEntity;
         if (noNewUnitIdentifier && conversationContext?.activeUnitId && mongoose.Types.ObjectId.isValid(conversationContext.activeUnitId)) {
             const unitInContext = await unitService.getUnitById(conversationContext.activeUnitId);
             if (unitInContext && unitInContext.tenantId.toString() === tenantId) {
-                // Ensure unit from context matches current project/tower context if they exist
                 const currentProjectContext = projectContextId || conversationContext?.activeProjectId;
                 const currentTowerContext = towerContextId || conversationContext?.activeTowerId;
-                if (currentTowerContext && unitInContext.towerId.toString() !== currentTowerContext) { /* Mismatch */ }
-                else if (currentProjectContext && unitInContext.projectId.toString() !== currentProjectContext) { /* Mismatch */ }
+                if (currentTowerContext && unitInContext.towerId._id.toString() !== currentTowerContext) { /* Mismatch */ }
+                else if (currentProjectContext && unitInContext.projectId._id.toString() !== currentProjectContext) { /* Mismatch */ }
                 else {
                     logger.debug(`[InventoryHandler._findUnitAdvanced] Using activeUnitId from context: ${conversationContext.activeUnitId}`);
                     return unitInContext;
@@ -138,9 +129,8 @@ class InventoryHandler {
             }
         }
 
-        // Priority 3: Search by Unit Number (REQUIRES tower or at least project context)
         if (unitNumberFromEntity) {
-            const filters = { tenantId, number: unitNumberFromEntity };
+            const filters = { tenantId, number: unitNumberFromEntity }; // Pass number string directly
             let effectiveTowerId = towerContextId || conversationContext?.activeTowerId;
             let effectiveProjectId = projectContextId || conversationContext?.activeProjectId;
 
@@ -155,19 +145,19 @@ class InventoryHandler {
                 return { requiresProjectOrTowerContext: true, forUnitNumber: unitNumberFromEntity };
             }
 
-            const unitsResult = await unitService.getUnits(filters, { page: 1, limit: 5 }); // Exact match on number should yield 1 if scoped
+            const unitsResult = await unitService.getUnits(filters, { page: 1, limit: 5 });
             if (unitsResult && unitsResult.data.length === 1) {
-                return await unitService.getUnitById(unitsResult.data[0]._id); // Fetch full details
+                return await unitService.getUnitById(unitsResult.data[0]._id);
             }
-            if (unitsResult && unitsResult.data.length > 1) { // Should be rare if unit numbers are unique within tower/project
-                return unitsResult.data; // Ambiguous
+            if (unitsResult && unitsResult.data.length > 1) {
+                return unitsResult.data;
             }
         }
         logger.debug(`[InventoryHandler._findUnitAdvanced] No unit found.`);
         return null;
     }
 
-    // --- Resolver Wrappers for Main Handlers ---
+    // --- Resolver Wrappers (no changes needed in these from Sprint 2.7) ---
     async _resolveProject(entities, tenantId, conversationContext) {
         const projectOrProjects = await this._findProjectAdvanced(entities, tenantId, conversationContext);
         if (!projectOrProjects) {
@@ -181,14 +171,14 @@ class InventoryHandler {
         return { error: false, project: projectOrProjects };
     }
 
-    async _resolveTower(entities, tenantId, projectContext, conversationContext) { // projectContext is the resolved Project object
+    async _resolveTower(entities, tenantId, projectContext, conversationContext) {
         const projectContextId = projectContext?._id?.toString();
         const towerOrTowers = await this._findTowerAdvanced(entities, tenantId, projectContextId, conversationContext);
 
         if (!towerOrTowers) {
             let msg = `I couldn't find tower "${entities[Entities.TOWER_NAME] || conversationContext.activeTowerName || 'specified'}"`;
-            if (projectContext) msg += ` in project ${projectContext.name}`;
-            else if (conversationContext.activeProjectName && !entities[Entities.PROJECT_NAME]) msg += ` in project ${conversationContext.activeProjectName}`;
+            const projectName = projectContext?.name || conversationContext.activeProjectName || (entities[Entities.PROJECT_NAME] || "");
+            if (projectName) msg += ` in project ${projectName}`;
             return { error: true, message: msg + ". Please try a different name or ID." };
         }
         if (towerOrTowers.requiresProjectContext) {
@@ -204,15 +194,17 @@ class InventoryHandler {
         return { error: false, tower: towerOrTowers };
     }
 
-    async _resolveUnit(entities, tenantId, projectContext, towerContext, conversationContext) { // projectContext & towerContext are resolved objects
+    async _resolveUnit(entities, tenantId, projectContext, towerContext, conversationContext) {
         const projectContextId = projectContext?._id?.toString();
         const towerContextId = towerContext?._id?.toString();
         const unitOrUnits = await this._findUnitAdvanced(entities, tenantId, projectContextId, towerContextId, conversationContext);
 
         if (!unitOrUnits) {
             let msg = `I couldn't find unit "${entities[Entities.UNIT_NUMBER] || conversationContext.activeUnitNumber || 'specified'}"`;
-            if (towerContext) msg += ` in tower ${towerContext.name}`;
-            else if (projectContext) msg += ` in project ${projectContext.name}`;
+            const towerName = towerContext?.name || conversationContext.activeTowerName || (entities[Entities.TOWER_NAME] || "");
+            const projectName = projectContext?.name || conversationContext.activeProjectName || (entities[Entities.PROJECT_NAME] || "");
+            if (towerName) msg += ` in tower ${towerName}`;
+            else if (projectName) msg += ` in project ${projectName}`;
             return { error: true, message: msg + ". Please provide more specific details or check the unit number." };
         }
         if (unitOrUnits.requiresProjectOrTowerContext) {
@@ -225,12 +217,16 @@ class InventoryHandler {
         return { error: false, unit: unitOrUnits };
     }
 
-    // --- Main Handler Functions ---
+    // --- Main Handler Functions (handleListProjects, handleGetProjectDetails, etc. remain the same as Sprint 2.7) ---
+    // Ensure all methods from the previous version of inventory.handler.js are included here.
+    // For brevity, only the finders and resolvers are shown with significant changes.
+    // The main handlers (handleListProjects, handleGetProjectDetails, etc.) should now correctly use these refined resolvers.
+
     async handleListProjects(entities, userId, tenantId, role, conversationContext) {
         try {
-            const filters = { city: entities[Entities.LOCATION], active: true }; // Default to active
+            const filters = { city: entities[Entities.LOCATION], active: true };
             if (entities[Entities.STATUS_VALUE] === 'inactive' || entities[Entities.STATUS_VALUE] === 'all') {
-                filters.active = entities[Entities.STATUS_VALUE] === 'inactive' ? false : undefined; // undefined for all
+                filters.active = entities[Entities.STATUS_VALUE] === 'inactive' ? false : undefined;
             }
             const pagination = { page: 1, limit: 10 };
             const projectsResult = await projectService.getProjects(tenantId, filters, pagination);
@@ -282,10 +278,10 @@ class InventoryHandler {
     async handleGetTowerDetails(entities, userId, tenantId, role, conversationContext) {
         try {
             const projectResolution = await this._resolveProject(entities, tenantId, conversationContext);
-            if (projectResolution.error && entities[Entities.PROJECT_NAME] && !entities[Entities.TOWER_ID]) { // If project was named and not found/ambiguous, and no Tower ID given
+            const projectContext = projectResolution.project; // This can be null if project not found/specified, but TOWER_ID might be present
+            if (projectResolution.error && entities[Entities.PROJECT_NAME] && !entities[Entities.TOWER_ID]) {
                 return { ...projectResolution, success: false, conversationContextUpdate: {} };
             }
-            const projectContext = projectResolution.project; // This might be null if only tower ID was given
 
             const towerResolution = await this._resolveTower(entities, tenantId, projectContext, conversationContext);
             if (towerResolution.error) return { ...towerResolution, success: false, conversationContextUpdate: {} };
@@ -324,7 +320,6 @@ class InventoryHandler {
             if (entities[Entities.UNIT_TYPE]) filters.type = entities[Entities.UNIT_TYPE];
             if (entities[Entities.MIN_PRICE]) filters.minPrice = parseFloat(entities[Entities.MIN_PRICE]);
             if (entities[Entities.MAX_PRICE]) filters.maxPrice = parseFloat(entities[Entities.MAX_PRICE]);
-            // Add other filters like area, views, floor
 
             const projectResolution = await this._resolveProject(entities, tenantId, conversationContext);
             const projectContext = projectResolution.project;
@@ -564,7 +559,7 @@ class InventoryHandler {
             const unit = unitResolution.unit;
 
             const lockedUnitDetails = await unitService.lockUnit(unit._id.toString(), userId, minutesToLock);
-            const finalLockedUnit = await unitService.getUnitById(lockedUnitDetails._id.toString()); // Re-fetch for populated names
+            const finalLockedUnit = await unitService.getUnitById(lockedUnitDetails._id.toString());
 
             return {
                 success: true,

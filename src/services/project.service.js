@@ -1,7 +1,9 @@
+// src/services/project.service.js
+
 const mongoose = require('mongoose');
 const Project = require('../models/project.model');
 const Tower = require('../models/tower.model');
-const Unit = require('../models/unit.model');
+const Unit = require('../models/unit.model'); // Corrected path from previous context
 const { ApiError } = require('../utils/error-handler');
 const logger = require('../utils/logger');
 
@@ -16,15 +18,22 @@ const createProject = async (projectData) => {
         await project.save();
         return project;
     } catch (error) {
-        logger.error('Error creating project', { error });
+        logger.error('Error creating project', {
+            message: error.message,
+            stack: error.stack,
+            projectData: JSON.stringify(projectData)
+        });
+        if (error.name === 'ValidationError') {
+            logger.error('Project Validation Error details:', error.errors);
+        }
         throw error;
     }
 };
 
 /**
  * Get projects by tenant with filtering options
- * @param {string} tenantId - Tenant ID
- * @param {Object} filters - Filter options
+ * @param {string} tenantId - Tenant ID (as string)
+ * @param {Object} filters - Filter options (can include 'search' for name, 'city', 'active')
  * @param {Object} pagination - Pagination options
  * @returns {Promise<Object>} - Projects with pagination info
  */
@@ -33,49 +42,49 @@ const getProjects = async (tenantId, filters = {}, pagination = { page: 1, limit
         const { page, limit } = pagination;
         const skip = (page - 1) * limit;
 
-        // Build query
-        const query = { tenantId };
-
-        // Add city filter if provided
-        if (filters.city) {
-            query.city = filters.city;
+        if (!mongoose.Types.ObjectId.isValid(tenantId)) {
+            throw new ApiError(400, 'Invalid Tenant ID format for filtering projects.');
         }
+        const query = { tenantId: new mongoose.Types.ObjectId(tenantId) };
 
-        // Add active filter if provided
+        if (filters.city) {
+            // Case-insensitive search for city
+            query.city = { $regex: new RegExp(filters.city, 'i') };
+        }
         if (filters.active !== undefined) {
             query.active = filters.active;
         }
-
-        // Add text search if provided
+        // The 'search' filter leverages the text index on Project model (name, description, address)
+        // This is suitable for finding projects by name or keywords.
         if (filters.search) {
             query.$text = { $search: filters.search };
         }
 
-        // Count total documents
+        logger.debug('[projectService.getProjects] Executing query:', JSON.stringify(query));
         const total = await Project.countDocuments(query);
 
-        // Execute query with pagination
+        // If using $text search, sort by text score for relevance, otherwise by createdAt
+        const sortOrder = filters.search ? { score: { $meta: "textScore" } } : { createdAt: -1 };
+
         const projects = await Project.find(query)
-            .sort({ createdAt: -1 })
+            .sort(sortOrder)
             .skip(skip)
             .limit(limit);
 
-        // Add unit counts to each project
         const projectsWithCounts = await Promise.all(
             projects.map(async (project) => {
-                const totalUnits = await Unit.countDocuments({ projectId: project._id });
+                const projectObjectId = new mongoose.Types.ObjectId(project._id);
+                const totalUnits = await Unit.countDocuments({ projectId: projectObjectId });
                 const availableUnits = await Unit.countDocuments({
-                    projectId: project._id,
+                    projectId: projectObjectId,
                     status: 'available',
                 });
-
-                const towerCount = await Tower.countDocuments({ projectId: project._id });
+                const towerCount = await Tower.countDocuments({ projectId: projectObjectId });
 
                 const projectObj = project.toObject();
                 projectObj.totalUnits = totalUnits;
                 projectObj.availableUnits = availableUnits;
                 projectObj.towerCount = towerCount;
-
                 return projectObj;
             })
         );
@@ -90,153 +99,163 @@ const getProjects = async (tenantId, filters = {}, pagination = { page: 1, limit
             },
         };
     } catch (error) {
-        logger.error('Error getting projects', { error, tenantId });
+        logger.error('Error getting projects', {
+            message: error.message,
+            stack: error.stack,
+            tenantId,
+            filters: JSON.stringify(filters)
+        });
         throw error;
     }
 };
 
 /**
  * Get project by ID with detailed information
- * @param {string} id - Project ID
+ * @param {string} id - Project ID (as string)
  * @returns {Promise<Object>} - Project with additional details
  */
 const getProjectById = async (id) => {
     try {
-        const project = await Project.findById(id);
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid Project ID format.');
+        }
+        const projectObjectId = new mongoose.Types.ObjectId(id);
+        const project = await Project.findById(projectObjectId);
 
         if (!project) {
             throw new ApiError(404, 'Project not found');
         }
 
-        // Get towers in this project
-        const towers = await Tower.find({ projectId: id });
+        const towers = await Tower.find({ projectId: projectObjectId });
+        const totalUnits = await Unit.countDocuments({ projectId: projectObjectId });
+        const availableUnits = await Unit.countDocuments({ projectId: projectObjectId, status: 'available' });
+        const bookedUnits = await Unit.countDocuments({ projectId: projectObjectId, status: 'booked' });
+        const soldUnits = await Unit.countDocuments({ projectId: projectObjectId, status: 'sold' });
 
-        // Get unit statistics
-        const totalUnits = await Unit.countDocuments({ projectId: id });
-        const availableUnits = await Unit.countDocuments({
-            projectId: id,
-            status: 'available',
-        });
-        const bookedUnits = await Unit.countDocuments({
-            projectId: id,
-            status: 'booked',
-        });
-        const soldUnits = await Unit.countDocuments({
-            projectId: id,
-            status: 'sold',
-        });
-
-        // Get unit types and their counts
         const unitTypes = await Unit.aggregate([
-            { $match: { projectId: new mongoose.Types.ObjectId(id) } },
+            { $match: { projectId: projectObjectId } },
             { $group: { _id: '$type', count: { $sum: 1 } } },
             { $sort: { count: -1 } },
         ]);
 
         const projectObj = project.toObject();
         projectObj.towers = towers;
+        projectObj.towerCount = towers.length;
         projectObj.unitStats = {
             total: totalUnits,
             available: availableUnits,
             booked: bookedUnits,
             sold: soldUnits,
-            types: unitTypes.map(type => ({
-                type: type._id,
-                count: type.count,
-            })),
+            types: unitTypes.map(type => ({ type: type._id, count: type.count })),
         };
 
         return projectObj;
     } catch (error) {
-        logger.error('Error getting project', { error, projectId: id });
+        logger.error('Error getting project by ID', {
+            message: error.message,
+            stack: error.stack,
+            projectId: id
+        });
         throw error;
     }
 };
 
 /**
  * Update project
- * @param {string} id - Project ID
+ * @param {string} id - Project ID (as string)
  * @param {Object} updateData - Data to update
  * @returns {Promise<Project>} - Updated project
  */
 const updateProject = async (id, updateData) => {
     try {
-        const project = await Project.findById(id);
-
-        if (!project) {
-            throw new ApiError(404, 'Project not found');
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid Project ID format.');
         }
 
-        // Fields that cannot be updated directly
-        const restrictedFields = ['tenantId'];
+        delete updateData.tenantId;
+        delete updateData.createdAt;
 
-        // Remove restricted fields from update data
-        restrictedFields.forEach((field) => {
-            if (updateData[field]) {
-                delete updateData[field];
-            }
-        });
+        const project = await Project.findByIdAndUpdate(
+            new mongoose.Types.ObjectId(id),
+            { $set: updateData },
+            { new: true, runValidators: true }
+        );
 
-        // Update project
-        Object.keys(updateData).forEach((key) => {
-            project[key] = updateData[key];
-        });
-
-        await project.save();
+        if (!project) {
+            throw new ApiError(404, 'Project not found for update');
+        }
         return project;
     } catch (error) {
-        logger.error('Error updating project', { error, projectId: id });
+        logger.error('Error updating project', {
+            message: error.message,
+            stack: error.stack,
+            projectId: id,
+            updateData: JSON.stringify(updateData)
+        });
+        if (error.name === 'ValidationError') {
+            logger.error('Project Update Validation Error details:', error.errors);
+        }
         throw error;
     }
 };
 
 /**
  * Set project status (active/inactive)
- * @param {string} id - Project ID
+ * @param {string} id - Project ID (as string)
  * @param {boolean} active - Active status
  * @returns {Promise<Project>} - Updated project
  */
 const setProjectStatus = async (id, active) => {
     try {
-        const project = await Project.findById(id);
-
-        if (!project) {
-            throw new ApiError(404, 'Project not found');
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid Project ID format.');
         }
-
+        const project = await Project.findById(new mongoose.Types.ObjectId(id));
+        if (!project) {
+            throw new ApiError(404, 'Project not found to set status');
+        }
         project.active = active;
         await project.save();
-
         return project;
     } catch (error) {
-        logger.error('Error setting project status', { error, projectId: id });
+        logger.error('Error setting project status', {
+            message: error.message,
+            stack: error.stack,
+            projectId: id,
+            active
+        });
         throw error;
     }
 };
 
 /**
  * Delete project
- * @param {string} id - Project ID
+ * @param {string} id - Project ID (as string)
  * @returns {Promise<boolean>} - Success status
  */
 const deleteProject = async (id) => {
     try {
-        // Check if project has any towers
-        const towerCount = await Tower.countDocuments({ projectId: id });
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            throw new ApiError(400, 'Invalid Project ID format.');
+        }
+        const projectObjectId = new mongoose.Types.ObjectId(id);
+        const towerCount = await Tower.countDocuments({ projectId: projectObjectId });
 
         if (towerCount > 0) {
-            throw new ApiError(400, 'Cannot delete project with existing towers');
+            throw new ApiError(400, 'Cannot delete project with existing towers. Please delete towers first.');
         }
 
-        const result = await Project.deleteOne({ _id: id });
-
+        const result = await Project.deleteOne({ _id: projectObjectId });
         if (result.deletedCount === 0) {
-            throw new ApiError(404, 'Project not found');
+            throw new ApiError(404, 'Project not found for deletion');
         }
-
         return true;
     } catch (error) {
-        logger.error('Error deleting project', { error, projectId: id });
+        logger.error('Error deleting project', {
+            message: error.message,
+            stack: error.stack,
+            projectId: id
+        });
         throw error;
     }
 };
